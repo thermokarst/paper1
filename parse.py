@@ -96,8 +96,8 @@ def parse_provenance(final_node):
     )
 
     nodes = list(flatten(nodes))
-    # results = {str(final_node.uuid): 'a-pcoa.qzv'}
     results = dict()
+
     for node in nodes:
         if node['node_type'] == 'action':
             for output in node['outputs']:
@@ -107,6 +107,7 @@ def parse_provenance(final_node):
         else:
             results[node['output_path']] = node['input_path'] + ext
 
+    # TODO: clean this mess up
     for node_pos, node in enumerate(nodes):
         if node['node_type'] == 'action':
             for input_pos, input_ in enumerate(node['inputs']):
@@ -119,6 +120,7 @@ def parse_provenance(final_node):
     return nodes
 
 if __name__ == '__main__':
+    # TODO: input file from argv
     final_artifact = Result.load('/Users/matthew/src/qiime2/paper1/figure1/a-pcoa.qzv')
 
     nodes = parse_provenance(final_artifact)
