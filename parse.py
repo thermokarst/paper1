@@ -36,25 +36,15 @@ def get_command(action, prov_dir, uuid):
     cmd.append(action['action']['action'].replace('_', '-'))
     for param_dict in action['action']['parameters']:
         (param, value), = param_dict.items()
-        mod = importlib.import_module(
-            'qiime2.plugins.' +
-            action['action']['plugin'].value.split(':')[-1].replace('-', '_'),
-        )
-        print('action!')
-        pprint(action['action'])
-        parameters = getattr(mod.actions, action['action']['action']).signature.parameters
-        print('params')
-        pprint(parameters)
-        if value != parameters[param].default:
-            param_sig = parameters[param]
-            if 'Metadata' in param_sig.qiime_type.name:
-                cmd.append('--m-' + param.replace('_', '-'))
-                cmd.append(str(value))
-            elif param_sig.qiime_type.name == 'Bool':
-                cmd.append('--p-' + ('' if value else 'no-') + param.replace('_', '-'))
-            else:
-                cmd.append('--p-' + param.replace('_', '-'))
-                cmd.append(str(value))
+        # TODO: check if value is None
+        if type(param) is yaml.ScalarNode and param.tag == '!metadata':
+            cmd.append('--m-' + param.replace('_', '-'))
+            cmd.append(str(value))
+        elif type(value) is bool:
+            cmd.append('--p-' + ('' if value else 'no-') + param.replace('_', '-'))
+        else:
+            cmd.append('--p-' + param.replace('_', '-'))
+            cmd.append(str(value))
     required_artifacts = []
     cmd.append('--o-' + action['action']['output-name'].replace('_', '-'))
     cmd.append(str(uuid))
@@ -66,16 +56,13 @@ def get_command(action, prov_dir, uuid):
                 continue
             cmd.append('--i-' + imput.replace('_', '-'))
             cmd.append(str(uuid))
-            print('whoa', uuid)
             required_artifacts.append(uuid)
     return ' '.join(cmd), required_artifacts
 
 def get_commands(action, prov_dir, uuid=None):
     cmd, dependencies = get_command(action, prov_dir, uuid)
     commands = [cmd]
-    print('deps', dependencies)
     for uuid in dependencies:
-        print(prov_dir, uuid)
         with (prov_dir / 'artifacts' / uuid / 'action' / 'action.yaml').open() as fh:
             action = yaml.load(fh)
         commands.extend(get_commands(action, prov_dir, uuid))
@@ -88,4 +75,4 @@ with (final_artifact._archiver.provenance_dir / 'action' / 'action.yaml').open()
 
 commands = reversed(get_commands(action, final_artifact._archiver.provenance_dir, str(final_artifact.uuid)))
 for cmd in OrderedDict([(c, None) for c in commands]):
-    print(cmd)
+    print(cmd, '\n')
