@@ -36,15 +36,21 @@ def get_command(action, prov_dir, uuid):
     cmd.append(action['action']['action'].replace('_', '-'))
     for param_dict in action['action']['parameters']:
         (param, value), = param_dict.items()
-        # TODO: check if value is None
-        if type(param) is yaml.ScalarNode and param.tag == '!metadata':
-            cmd.append('--m-' + param.replace('_', '-'))
-            cmd.append(str(value))
-        elif type(value) is bool:
-            cmd.append('--p-' + ('' if value else 'no-') + param.replace('_', '-'))
-        else:
-            cmd.append('--p-' + param.replace('_', '-'))
-            cmd.append(str(value))
+        mod = importlib.import_module(
+            'qiime2.plugins.' +
+            action['action']['plugin'].value.split(':')[-1].replace('-', '_'),
+        )
+        parameters = getattr(mod.actions, action['action']['action']).signature.parameters
+        if value != parameters[param].default:
+            param_sig = parameters[param]
+            if 'Metadata' in param_sig.qiime_type.name:
+                cmd.append('--m-FIX-ME')
+                cmd.append('REPLACE_ME.tsv')
+            elif param_sig.qiime_type.name == 'Bool':
+                cmd.append('--p-' + ('' if value else 'no-') + param.replace('_', '-'))
+            else:
+                cmd.append('--p-' + param.replace('_', '-'))
+                cmd.append(str(value))
     required_artifacts = []
     cmd.append('--o-' + action['action']['output-name'].replace('_', '-'))
     cmd.append(str(uuid))
