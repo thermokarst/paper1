@@ -3,6 +3,7 @@ import pathlib
 import pprint
 
 import yaml
+from qiime2 import Metadata
 from qiime2.sdk import Result
 
 
@@ -45,17 +46,20 @@ def get_node(node_actions, prov_dir, output_dir, uuid):
     for param_dict in node_actions['action']['parameters']:
         (param, value), = param_dict.items()
 
-        # TODO: check defaults? Maybe not - discussed with Greg, might be
-        # better to show *all* the things prov is tracking
         if type(value) is yaml.ScalarNode and value.tag == '!metadata':
             filename = value.value
             if str(uuid) not in str(prov_dir):
                 md = prov_dir / 'artifacts' / str(uuid) / 'action' / filename
             else:
                 md = prov_dir / 'action' / filename
+            qmd = Metadata.load(str(md))
+            # Could yield some false positives
+            md_type = 'column' if qmd.column_count == 1 else 'full'
+            # TODO: figure out column name
+
             new_md = '%s.tsv' % uuid
             md.rename(output_dir / new_md)
-            node['metadata'].append((param, '%s.tsv' % uuid))
+            node['metadata'].append((param, '%s.tsv' % uuid, md_type))
         else:
             node['parameters'].append((param, value))
 
@@ -118,7 +122,6 @@ def parse_provenance(final_node, output_dir):
         else:
             results[node['output_path']] = node['input_path'] + ext
 
-    # TODO: clean this mess up
     for node_pos, node in enumerate(nodes):
         if node['node_type'] == 'action':
             for input_pos, input_ in enumerate(node['inputs']):
@@ -127,8 +130,13 @@ def parse_provenance(final_node, output_dir):
             for output_pos, output in enumerate(node['outputs']):
                 nodes[node_pos]['outputs'][output_pos] = (output[0],
                                                           results[output[1]])
+            # TODO: rename metadata TSVs
+            for metadata_pos, metadata in enumerate(node['metadata']):
+                pass
         else:
             nodes[node_pos]['output_path'] = results[node['output_path']]
+
+    nodes = list(reversed(nodes))
 
     return nodes
 
@@ -141,6 +149,46 @@ def is_valid_outdir(parser, outdir):
     else:
         outpath.mkdir()
     return outpath
+
+
+def nodes_to_artifact_api(nodes, output_dir):
+    outfile = (output_dir / 'artifact_api.py').open('w')
+    outfile.write('#!/bin/sh\n\n')
+
+    # TODO: do something with plugin deps
+
+    for node in nodes:
+        # TODO: Clean this up
+        if node['node_type'] == 'action':
+            cmd = ['qiime']
+            cmd.append(node['plugin'])
+            cmd.append('%s \\\n' % node['action'].replace('_', '-'))
+            for name, value in node['inputs']:
+                cmd.append(' --i-%s %s \\\n' % (name.replace('_', '-'), value))
+            for name, value in node['metadata']:
+                cmd.append(' --m-%s-file %s \\\n' %
+                           (name.replace('_', '-'), value))
+            for name, value in node['parameters']:
+                if isinstance(value, bool):
+                    cmd.append(' --p-%s%s \\\n' %
+                               ('' if value else 'no-',
+                                name.replace('_', '-')))
+                elif value is not None:
+                    cmd.append(' --p-%s %s \\\n' %
+                               (name.replace('_', '-'), value))
+            for name, value in node['outputs']:
+                cmd.append(' --o-%s %s \\\n' % (name.replace('_', '-'), value))
+        else:
+            cmd = ['qiime', 'tools', 'import', '\\\n',
+                   ' --type', "'%s'" % node['type'], '\\\n',
+                   ' --input-path', node['input_path'], '\\\n',
+                   ' --input-format', node['input_format'], '\\\n',
+                   ' --output-path', node['output_path'], '\\\n']
+
+        # Clean up final line
+        cmd[-1] = cmd[-1].replace('\\', '')
+        outfile.write('%s' % ' '.join(cmd))
+    outfile.close()
 
 
 if __name__ == '__main__':
@@ -157,9 +205,9 @@ if __name__ == '__main__':
     nodes = parse_provenance(args.final_artifact, args.output_dir)
 
     pp = pprint.PrettyPrinter(indent=4)
-    pp.pprint(list(reversed(nodes)))
+    pp.pprint(nodes)
     # TODO: parse nodes into:
-    #   - CLI format
     #   - API format
+    nodes_to_artifact_api(nodes, args.output_dir)
 
     # TODO: emit warning about metadata - maybe
