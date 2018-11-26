@@ -1,6 +1,7 @@
-import itertools
+import argparse
+import os
+import pathlib
 import pprint
-import importlib
 import yaml
 from qiime2.sdk import Result
 
@@ -25,13 +26,15 @@ def get_import(node_actions, prov_dir, uuid):
     return node, []
 
 
-def get_node(node_actions, prov_dir, uuid):
+def get_node(node_actions, prov_dir, output_dir, uuid):
     if node_actions['action']['type'] == 'import':
         return get_import(node_actions, prov_dir, uuid)
 
     node = {
         'node_type': 'action',
         'plugin': node_actions['action']['plugin'].value.split(':')[-1],
+        # TODO: clean this up
+        'plugins': node_actions['environment']['plugins'],
         'action': node_actions['action']['action'],
         'inputs': [],
         'metadata': [],
@@ -41,17 +44,21 @@ def get_node(node_actions, prov_dir, uuid):
 
     for param_dict in node_actions['action']['parameters']:
         (param, value), = param_dict.items()
-        mod = importlib.import_module(
-            'qiime2.plugins.' +
-            node_actions['action']['plugin'].value.split(':')[-1].replace('-', '_'),
-        )
-        parameters = getattr(mod.actions, node_actions['action']['action']).signature.parameters
-        if value != parameters[param].default:
-            param_sig = parameters[param]
-            if 'Metadata' in param_sig.qiime_type.name:
-                node['metadata'].append(('FIX_ME', 'REPLACE_ME.tsv'))
+
+        # TODO: check defaults? Maybe not - discussed with Greg, might be
+        # better to show *all* the things prov is tracking
+        if type(value) is yaml.ScalarNode and value.tag == '!metadata':
+            filename = value.value
+            if str(uuid) not in str(prov_dir):
+                md = prov_dir / 'artifacts' / str(uuid) / 'action' / filename
             else:
-                node['parameters'].append((param, value))
+                md = prov_dir / 'action' / filename
+            new_md = '%s.tsv' % uuid
+            md.rename(output_dir / new_md)
+            node['metadata'].append((param, '%s.tsv' % uuid))
+        else:
+            node['parameters'].append((param, value))
+
     node['outputs'].append((node_actions['action']['output-name'], str(uuid)))
     required_dependencies = []
     for input_ in node_actions['action']['inputs']:
@@ -65,14 +72,16 @@ def get_node(node_actions, prov_dir, uuid):
     return node, required_dependencies
 
 
-def get_nodes(final_node_actions, prov_dir, uuid=None):
-    node, dependencies = get_node(final_node_actions, prov_dir, uuid)
+def get_nodes(final_node_actions, prov_dir, output_dir, uuid=None):
+    node, dependencies = get_node(final_node_actions, prov_dir,
+                                  output_dir, uuid)
     nodes = [node]
 
     for uuid in dependencies:
-        with (prov_dir / 'artifacts' / uuid / 'action' / 'action.yaml').open() as fh:
+        action_yaml = prov_dir / 'artifacts' / uuid / 'action' / 'action.yaml'
+        with action_yaml.open() as fh:
             node_action = yaml.load(fh)
-        nodes.append(get_nodes(node_action, prov_dir, uuid))
+        nodes.append(get_nodes(node_action, prov_dir, output_dir, uuid))
     return nodes
 
 
@@ -85,13 +94,15 @@ def flatten(l):
             yield el
 
 
-def parse_provenance(final_node):
-    with (final_node._archiver.provenance_dir / 'action' / 'action.yaml').open() as fh:
+def parse_provenance(final_node, output_dir):
+    final_yaml = final_node._archiver.provenance_dir / 'action' / 'action.yaml'
+    with final_yaml.open() as fh:
         final_node_actions = yaml.load(fh)
 
     nodes = get_nodes(
         final_node_actions,
         final_node._archiver.provenance_dir,
+        output_dir,
         str(final_node.uuid),
     )
 
@@ -111,19 +122,37 @@ def parse_provenance(final_node):
     for node_pos, node in enumerate(nodes):
         if node['node_type'] == 'action':
             for input_pos, input_ in enumerate(node['inputs']):
-                nodes[node_pos]['inputs'][input_pos] = (input_[0], results[input_[1]])
+                nodes[node_pos]['inputs'][input_pos] = (input_[0],
+                                                        results[input_[1]])
             for output_pos, output in enumerate(node['outputs']):
-                nodes[node_pos]['outputs'][output_pos] = (output[0], results[output[1]])
+                nodes[node_pos]['outputs'][output_pos] = (output[0],
+                                                          results[output[1]])
         else:
             nodes[node_pos]['output_path'] = results[node['output_path']]
 
     return nodes
 
-if __name__ == '__main__':
-    # TODO: input file from argv
-    final_artifact = Result.load('/Users/matthew/src/qiime2/paper1/figure1/a-pcoa.qzv')
 
-    nodes = parse_provenance(final_artifact)
+def is_valid_outdir(parser, outdir):
+    if os.path.exists(outdir) and os.path.isdir(outdir):
+        if os.listdir(outdir):
+            parser.error('%s is not empty!' % outdir)
+    outpath = pathlib.Path(outdir)
+    outpath.mkdir()
+    return outpath
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('final_artifact', metavar='INPUT_PATH',
+                        help='archive to parse', type=Result.load)
+    parser.add_argument('output_dir', metavar='OUTPUT_PATH',
+                        help='directory to output to',
+                        type=lambda x: is_valid_outdir(parser, x))
+
+    args = parser.parse_args()
+
+    nodes = parse_provenance(args.final_artifact, args.output_dir)
 
     pp = pprint.PrettyPrinter(indent=4)
     pp.pprint(list(reversed(nodes)))
@@ -131,4 +160,4 @@ if __name__ == '__main__':
     #   - CLI format
     #   - API format
 
-    # TODO: emit warning about metadata
+    # TODO: emit warning about metadata - maybe
