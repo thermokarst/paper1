@@ -1,7 +1,7 @@
 import argparse
-import os
 import pathlib
 import pprint
+
 import yaml
 from qiime2.sdk import Result
 
@@ -134,11 +134,12 @@ def parse_provenance(final_node, output_dir):
 
 
 def is_valid_outdir(parser, outdir):
-    if os.path.exists(outdir) and os.path.isdir(outdir):
-        if os.listdir(outdir):
-            parser.error('%s is not empty!' % outdir)
     outpath = pathlib.Path(outdir)
-    outpath.mkdir()
+    if outpath.exists() and outpath.is_dir():
+        if list(outpath.iterdir()):
+            parser.error('%s is not empty!' % outdir)
+    else:
+        outpath.mkdir()
     return outpath
 
 
@@ -147,7 +148,8 @@ if __name__ == '__main__':
     parser.add_argument('final_artifact', metavar='INPUT_PATH',
                         help='archive to parse', type=Result.load)
     parser.add_argument('output_dir', metavar='OUTPUT_PATH',
-                        help='directory to output to',
+                        help='directory to output to '
+                             '(must be empty/not exist)',
                         type=lambda x: is_valid_outdir(parser, x))
 
     args = parser.parse_args()
