@@ -212,6 +212,21 @@ def parse_provenance(final_node, output_dir):
     return nodes
 
 
+def kebab(string):
+    return string.replace('_', '-')
+
+
+def kebabify_action_node(node):
+    return {
+        'plugin': node['plugin'],
+        'action': kebab(node['action']),
+        'inputs': [(kebab(x), y) for x, y in node['inputs']],
+        'metadata': [(kebab(x), y) for x, y, _ in node['metadata']],
+        'parameters': [(kebab(x), y) for x, y in node['parameters']],
+        'outputs': [(kebab(x), y) for x, y in node['outputs']],
+    }
+
+
 def nodes_to_q2cli(nodes, output_dir):
     outfile = (output_dir / 'q2cli.sh').open('w')
     outfile.write('#!/bin/sh\n\n')
@@ -221,34 +236,37 @@ def nodes_to_q2cli(nodes, output_dir):
     for node in nodes:
         # TODO: Clean this up
         if node['node_type'] == 'action':
-            cmd = ['qiime']
-            cmd.append(node['plugin'])
-            cmd.append('%s \\\n' % node['action'].replace('_', '-'))
-            for name, value in node['inputs']:
-                cmd.append(' --i-%s %s \\\n' % (name.replace('_', '-'), value))
-            for name, value, _ in node['metadata']:
-                cmd.append(' --m-%s-file %s \\\n' %
-                           (name.replace('_', '-'), value))
-            for name, value in node['parameters']:
-                if isinstance(value, bool):
-                    cmd.append(' --p-%s%s \\\n' %
-                               ('' if value else 'no-',
-                                name.replace('_', '-')))
-                elif value is not None:
-                    cmd.append(' --p-%s %s \\\n' %
-                               (name.replace('_', '-'), value))
-            for name, value in node['outputs']:
-                cmd.append(' --o-%s %s \\\n' % (name.replace('_', '-'), value))
-        else:
-            cmd = ['qiime', 'tools', 'import', '\\\n',
-                   ' --type', "'%s'" % node['type'], '\\\n',
-                   ' --input-path', node['input_path'], '\\\n',
-                   ' --input-format', node['input_format'], '\\\n',
-                   ' --output-path', node['output_path'], '\\\n']
+            kebab_node = kebabify_action_node(node)
 
-        # Clean up final line
-        cmd[-1] = cmd[-1].replace('\\', '')
-        outfile.write('%s' % ' '.join(cmd))
+            line = ['qiime']
+            line.append(kebab_node['plugin'])
+            line.append('%s' % kebab_node['action'])
+
+            cmd = [line]
+            for name, value in kebab_node['inputs']:
+                cmd.append(['--i-%s' % name, '%s' % value])
+            for name, value in kebab_node['metadata']:
+                cmd.append(['--m-%s-file' % name, '%s' % value])
+            for name, value in kebab_node['parameters']:
+                if isinstance(value, bool):
+                    cmd.append(['--p-%s%s' % ('' if value else 'no-', name)])
+                elif value is not None:
+                    cmd.append(['--p-%s' % name, '%s' % value])
+            for name, value in kebab_node['outputs']:
+                cmd.append(['--o-%s' % name, '%s' % value])
+        else:
+            cmd = [['qiime', 'tools', 'import'],
+                   ['--type', "'%s'" % node['type']],
+                   ['--input-path', node['input_path']],
+                   ['--input-format', node['input_format']],
+                   ['--output-path', node['output_path']]]
+
+        cmd = [' '.join(line) for line in cmd]
+        first = ['%s \\' % cmd[0]]
+        last = ['  %s\n' % cmd[-1]]
+        cmd = first + ['  %s \\' % line for line in cmd[1:-1]] + last
+
+        outfile.write('%s' % '\n'.join(cmd))
     outfile.close()
 
 
