@@ -14,88 +14,120 @@ yaml.add_constructor('!cite', lambda x, y: y)
 yaml.add_constructor('!metadata', lambda x, y: y)
 
 
-def get_import(node_actions, prov_dir, uuid):
-    node = {
-        'node_type': 'import',
-    }
-
-    if len(node_actions['action']['manifest']) == 1:
-        node['input_path'] = node_actions['action']['manifest'][0]['name']
-    else:
-        node['input_path'] = node_actions['action']['format'] + 'import_dir'
-    node['input_format'] = node_actions['action']['format']
-    with (prov_dir / 'artifacts' / uuid / 'metadata.yaml').open() as fh:
-        metadata = yaml.load(fh)
-    node['type'] = metadata['type']
-    node['output_path'] = str(uuid)
-    return node, []
-
-
-def get_node(node_actions, prov_dir, output_dir, uuid):
-    if node_actions['action']['type'] == 'import':
-        return get_import(node_actions, prov_dir, uuid)
-
-    node = {
-        'node_type': 'action',
-        'plugin': node_actions['action']['plugin'].value.split(':')[-1],
-        # TODO: clean this up
-        'plugins': node_actions['environment']['plugins'],
-        'action': node_actions['action']['action'],
-        'inputs': [],
-        'metadata': [],
-        'parameters': [],
-        'outputs': [],
-    }
-
-    for param_dict in node_actions['action']['parameters']:
-        (param, value), = param_dict.items()
-
-        if type(value) is yaml.ScalarNode and value.tag == '!metadata':
-            filename = value.value
-            if str(uuid) not in str(prov_dir):
-                md = prov_dir / 'artifacts' / str(uuid) / 'action' / filename
-            else:
-                md = prov_dir / 'action' / filename
-
-            try:
-                qmd = Metadata.load(str(md))
-            except MetadataFileError as e:
-                if 'Found unrecognized ID column name' in str(e):
-                    # This happens when the header row is missing, which is
-                    # apparently a common thing in pre-2018 provenance.
-                    old_md = md
-                    md = old_md.parent / 'modified_md.tsv'
-                    md.write_text(old_md.read_text())
-                    with md.open('r+') as fh:
-                        content = fh.read()
-                        # Gross hack - seed new header row with data from
-                        # first row.
-                        first_line = content.split('\n', 1)[0].split('\t')
-                        first_line[0] = 'id'
-                        fh.seek(0, 0)
-                        fh.write('\t'.join(first_line) + '\n' + content)
-                    qmd = Metadata.load(str(md))
-                else:
-                    raise e
-
-            # Could yield some false positives
-            md_type = 'column' if qmd.column_count == 1 else 'full'
-            # TODO: figure out column name
-
-            new_md = '%s.tsv' % uuid
-            (output_dir / new_md).write_text(md.read_text())
-            node['metadata'].append((param, '%s.tsv' % uuid, md_type))
+# https://stackoverflow.com/a/2158532/313548
+def flatten(l):
+    for el in l:
+        if isinstance(el, list):
+            yield from flatten(el)
         else:
-            node['parameters'].append((param, value))
+            yield el
 
-    if 'output-name' in node_actions['action']:
-        node['outputs'].append((node_actions['action']['output-name'],
-                                str(uuid)))
+
+def is_valid_outdir(parser, outdir):
+    outpath = pathlib.Path(outdir)
+    if outpath.exists() and outpath.is_dir():
+        if list(outpath.iterdir()):
+            parser.error('%s is not empty!' % outdir)
+    else:
+        outpath.mkdir()
+    return outpath
+
+
+def get_import_input_path(node):
+    if len(node['action']['manifest']) == 1:
+        return node['action']['manifest'][0]['name']
+    else:
+        return node['action']['format'] + 'import_dir'
+
+
+def get_output_name(node, uuid, prov_dir):
+    if 'output-name' in node['action']:
+        return node['action']['output-name'], str(uuid)
     else:  # ooollldddd provenance
         alt_uuid = (prov_dir / 'artifacts' / str(uuid) / 'metadata.yaml')
         with alt_uuid.open() as fh:
             mdy = yaml.load(fh)
-        node['outputs'].append(('TOO_OLD', mdy['uuid']))
+        return 'TOO_OLD', mdy['uuid']
+
+
+def node_is_import(node):
+    return node['action']['type'] == 'import'
+
+
+def param_is_metadata(value):
+    return type(value) is yaml.ScalarNode and value.tag == '!metadata'
+
+
+def load_and_interrogate_metadata(pathlib_md, uuid):
+    try:
+        qmd = Metadata.load(str(pathlib_md))
+    except MetadataFileError as e:
+        if 'Found unrecognized ID column name' in str(e):
+            # This happens when the header row is missing, which is
+            # apparently a common thing in pre-2018 provenance.
+            md = pathlib_md.parent / 'modified_md.tsv'
+            md.write_text(pathlib_md.read_text())
+            with md.open('r+') as fh:
+                content = fh.read()
+                # Gross hack - seed new header row with data from
+                # first row.
+                first_line = content.split('\n', 1)[0].split('\t')
+                first_line[0] = 'id'
+                fh.seek(0, 0)
+                fh.write('\t'.join(first_line) + '\n' + content)
+            qmd = Metadata.load(str(md))
+        else:
+            raise e
+
+    # Could yield some false positives
+    md_type = 'column' if qmd.column_count == 1 else 'full'
+    # TODO: figure out column name
+
+    new_md = '%s.tsv' % uuid
+
+    return md_type, new_md
+
+
+def find_metadata_path(filename, prov_dir, uuid):
+    if str(uuid) not in str(prov_dir):
+        md = prov_dir / 'artifacts' / uuid / 'action' / filename
+    else:
+        md = prov_dir / 'action' / filename
+    return md
+
+
+def get_import(node_actions, prov_dir, uuid):
+    with (prov_dir / 'artifacts' / uuid / 'metadata.yaml').open() as fh:
+        metadata = yaml.load(fh)
+
+    return {
+        'node_type': 'import',
+        'input_path': get_import_input_path(node_actions),
+        'input_format': node_actions['action']['format'],
+        'type': metadata['type'],
+        'output_path': str(uuid),
+    }, []
+
+
+def get_node(node_actions, prov_dir, output_dir, uuid):
+    if node_is_import(node_actions):
+        return get_import(node_actions, prov_dir, uuid)
+
+    inputs, metadata, parameters, outputs = [], [], [], []
+
+    for param_dict in node_actions['action']['parameters']:
+        # these dicts always have one pair
+        (param, value),  = param_dict.items()
+
+        if param_is_metadata(value):
+            md = find_metadata_path(value.value, prov_dir, uuid)
+            md_type, new_md = load_and_interrogate_metadata(md, uuid)
+            (output_dir / new_md).write_text(md.read_text())
+            metadata.append((param, '%s.tsv' % uuid, md_type))
+        else:
+            parameters.append((param, value))
+
+    outputs.append(get_output_name(node_actions, uuid, prov_dir))
 
     required_dependencies = []
     for input_ in node_actions['action']['inputs']:
@@ -104,8 +136,21 @@ def get_node(node_actions, prov_dir, output_dir, uuid):
         for uuid in uuids:
             if uuid is None:
                 continue
-            node['inputs'].append((input_, str(uuid)))
+            inputs.append((input_, str(uuid)))
             required_dependencies.append(uuid)
+
+    node = {
+        'node_type': 'action',
+        'plugin': node_actions['action']['plugin'].value.split(':')[-1],
+        # TODO: clean this up
+        'plugins': node_actions['environment']['plugins'],
+        'action': node_actions['action']['action'],
+        'inputs': inputs,
+        'metadata': metadata,
+        'parameters': parameters,
+        'outputs': outputs,
+    }
+
     return node, required_dependencies
 
 
@@ -120,15 +165,6 @@ def get_nodes(final_node_actions, prov_dir, output_dir, uuid=None):
             node_action = yaml.load(fh)
         nodes.append(get_nodes(node_action, prov_dir, output_dir, uuid))
     return nodes
-
-
-# https://stackoverflow.com/a/2158532/313548
-def flatten(l):
-    for el in l:
-        if isinstance(el, list):
-            yield from flatten(el)
-        else:
-            yield el
 
 
 def parse_provenance(final_node, output_dir):
@@ -163,7 +199,7 @@ def parse_provenance(final_node, output_dir):
             for output_pos, output in enumerate(node['outputs']):
                 nodes[node_pos]['outputs'][output_pos] = (output[0],
                                                           results[output[1]])
-            # TODO: rename metadata TSVs
+            # TODO: rename metadata TSVs?
             for metadata_pos, metadata in enumerate(node['metadata']):
                 pass
         else:
@@ -172,16 +208,6 @@ def parse_provenance(final_node, output_dir):
     nodes = list(reversed(nodes))
 
     return nodes
-
-
-def is_valid_outdir(parser, outdir):
-    outpath = pathlib.Path(outdir)
-    if outpath.exists() and outpath.is_dir():
-        if list(outpath.iterdir()):
-            parser.error('%s is not empty!' % outdir)
-    else:
-        outpath.mkdir()
-    return outpath
 
 
 def nodes_to_q2cli(nodes, output_dir):
