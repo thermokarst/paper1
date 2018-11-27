@@ -14,6 +14,11 @@ yaml.add_constructor('!cite', lambda x, y: y)
 yaml.add_constructor('!metadata', lambda x, y: y)
 
 
+def load_yaml(pathlib_path):
+    with pathlib_path.open() as fh:
+        return yaml.load(fh)
+
+
 # https://stackoverflow.com/a/2158532/313548
 def flatten(l):
     for el in l:
@@ -45,8 +50,7 @@ def get_output_name(node, uuid, prov_dir):
         return node['action']['output-name'], str(uuid)
     else:  # ooollldddd provenance
         alt_uuid = (prov_dir / 'artifacts' / str(uuid) / 'metadata.yaml')
-        with alt_uuid.open() as fh:
-            mdy = yaml.load(fh)
+        mdy = load_yaml(alt_uuid)
         return 'TOO_OLD', mdy['uuid']
 
 
@@ -58,7 +62,7 @@ def param_is_metadata(value):
     return type(value) is yaml.ScalarNode and value.tag == '!metadata'
 
 
-def load_and_interrogate_metadata(pathlib_md, uuid):
+def load_and_interrogate_metadata(pathlib_md):
     try:
         qmd = Metadata.load(str(pathlib_md))
     except MetadataFileError as e:
@@ -83,22 +87,19 @@ def load_and_interrogate_metadata(pathlib_md, uuid):
     md_type = 'column' if qmd.column_count == 1 else 'full'
     # TODO: figure out column name
 
-    new_md = '%s.tsv' % uuid
-
-    return md_type, new_md
+    return md_type
 
 
 def find_metadata_path(filename, prov_dir, uuid):
     if str(uuid) not in str(prov_dir):
-        md = prov_dir / 'artifacts' / uuid / 'action' / filename
+        return prov_dir / 'artifacts' / uuid / 'action' / filename
     else:
-        md = prov_dir / 'action' / filename
-    return md
+        return prov_dir / 'action' / filename
 
 
 def get_import(node_actions, prov_dir, uuid):
-    with (prov_dir / 'artifacts' / uuid / 'metadata.yaml').open() as fh:
-        metadata = yaml.load(fh)
+    metadata_fp = prov_dir / 'artifacts' / uuid / 'metadata.yaml'
+    metadata = load_yaml(metadata_fp)
 
     return {
         'node_type': 'import',
@@ -121,12 +122,18 @@ def get_node(node_actions, prov_dir, output_dir, uuid):
 
         if param_is_metadata(value):
             md = find_metadata_path(value.value, prov_dir, uuid)
-            md_type, new_md = load_and_interrogate_metadata(md, uuid)
-            (output_dir / new_md).write_text(md.read_text())
+            md_type = load_and_interrogate_metadata(md)
             metadata.append((param, '%s.tsv' % uuid, md_type))
         else:
+            # TODO: feature-classifier has `null` param vals
             parameters.append((param, value))
 
+    # TODO: a "pure" provenance solution is unable to determine *all* of the
+    # outputs created by an action (unless of course they are somehow all
+    # present in the prov graph) --- this means that at present we will need
+    # to either interogate the plugin signature (hard to do with old releases),
+    # or, manually modify the commands generated. Another option is to use
+    # "output_dir" (q2cli) and Results object (Artifact API).
     outputs.append(get_output_name(node_actions, uuid, prov_dir))
 
     required_dependencies = []
@@ -142,7 +149,7 @@ def get_node(node_actions, prov_dir, output_dir, uuid):
     node = {
         'node_type': 'action',
         'plugin': node_actions['action']['plugin'].value.split(':')[-1],
-        # TODO: clean this up
+        # TODO: clean up the content of this
         'plugins': node_actions['environment']['plugins'],
         'action': node_actions['action']['action'],
         'inputs': inputs,
@@ -161,16 +168,14 @@ def get_nodes(final_node_actions, prov_dir, output_dir, uuid=None):
 
     for uuid in dependencies:
         action_yaml = prov_dir / 'artifacts' / uuid / 'action' / 'action.yaml'
-        with action_yaml.open() as fh:
-            node_action = yaml.load(fh)
+        node_action = load_yaml(action_yaml)
         nodes.append(get_nodes(node_action, prov_dir, output_dir, uuid))
     return nodes
 
 
 def parse_provenance(final_node, output_dir):
-    final_yaml = final_node._archiver.provenance_dir / 'action' / 'action.yaml'
-    with final_yaml.open() as fh:
-        final_node_actions = yaml.load(fh)
+    final_fp = final_node._archiver.provenance_dir / 'action' / 'action.yaml'
+    final_node_actions = load_yaml(final_fp)
 
     nodes = get_nodes(
         final_node_actions,
@@ -199,9 +204,6 @@ def parse_provenance(final_node, output_dir):
             for output_pos, output in enumerate(node['outputs']):
                 nodes[node_pos]['outputs'][output_pos] = (output[0],
                                                           results[output[1]])
-            # TODO: rename metadata TSVs?
-            for metadata_pos, metadata in enumerate(node['metadata']):
-                pass
         else:
             nodes[node_pos]['output_path'] = results[node['output_path']]
 
