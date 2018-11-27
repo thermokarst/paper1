@@ -3,7 +3,9 @@ import pathlib
 import pprint
 
 import yaml
+
 from qiime2 import Metadata
+from qiime2.metadata.io import MetadataFileError
 from qiime2.sdk import Result
 
 
@@ -17,8 +19,10 @@ def get_import(node_actions, prov_dir, uuid):
         'node_type': 'import',
     }
 
-    assert len(node_actions['action']['manifest']) == 1
-    node['input_path'] = node_actions['action']['manifest'][0]['name']
+    if len(node_actions['action']['manifest']) == 1:
+        node['input_path'] = node_actions['action']['manifest'][0]['name']
+    else:
+        node['input_path'] = node_actions['action']['format'] + 'import_dir'
     node['input_format'] = node_actions['action']['format']
     with (prov_dir / 'artifacts' / uuid / 'metadata.yaml').open() as fh:
         metadata = yaml.load(fh)
@@ -52,18 +56,47 @@ def get_node(node_actions, prov_dir, output_dir, uuid):
                 md = prov_dir / 'artifacts' / str(uuid) / 'action' / filename
             else:
                 md = prov_dir / 'action' / filename
-            qmd = Metadata.load(str(md))
+
+            try:
+                qmd = Metadata.load(str(md))
+            except MetadataFileError as e:
+                if 'Found unrecognized ID column name' in str(e):
+                    # This happens when the header row is missing, which is
+                    # apparently a common thing in pre-2018 provenance.
+                    old_md = md
+                    md = old_md.parent / 'modified_md.tsv'
+                    md.write_text(old_md.read_text())
+                    with md.open('r+') as fh:
+                        content = fh.read()
+                        # Gross hack - seed new header row with data from
+                        # first row.
+                        first_line = content.split('\n', 1)[0].split('\t')
+                        first_line[0] = 'id'
+                        fh.seek(0, 0)
+                        fh.write('\t'.join(first_line) + '\n' + content)
+                    qmd = Metadata.load(str(md))
+                else:
+                    raise e
+
             # Could yield some false positives
             md_type = 'column' if qmd.column_count == 1 else 'full'
             # TODO: figure out column name
 
             new_md = '%s.tsv' % uuid
-            md.rename(output_dir / new_md)
+            (output_dir / new_md).write_text(md.read_text())
             node['metadata'].append((param, '%s.tsv' % uuid, md_type))
         else:
             node['parameters'].append((param, value))
 
-    node['outputs'].append((node_actions['action']['output-name'], str(uuid)))
+    if 'output-name' in node_actions['action']:
+        node['outputs'].append((node_actions['action']['output-name'],
+                                str(uuid)))
+    else:  # ooollldddd provenance
+        alt_uuid = (prov_dir / 'artifacts' / str(uuid) / 'metadata.yaml')
+        with alt_uuid.open() as fh:
+            mdy = yaml.load(fh)
+        node['outputs'].append(('TOO_OLD', mdy['uuid']))
+
     required_dependencies = []
     for input_ in node_actions['action']['inputs']:
         (input_, uuids), = input_.items()
@@ -151,8 +184,8 @@ def is_valid_outdir(parser, outdir):
     return outpath
 
 
-def nodes_to_artifact_api(nodes, output_dir):
-    outfile = (output_dir / 'artifact_api.py').open('w')
+def nodes_to_q2cli(nodes, output_dir):
+    outfile = (output_dir / 'q2cli.sh').open('w')
     outfile.write('#!/bin/sh\n\n')
 
     # TODO: do something with plugin deps
@@ -165,7 +198,7 @@ def nodes_to_artifact_api(nodes, output_dir):
             cmd.append('%s \\\n' % node['action'].replace('_', '-'))
             for name, value in node['inputs']:
                 cmd.append(' --i-%s %s \\\n' % (name.replace('_', '-'), value))
-            for name, value in node['metadata']:
+            for name, value, _ in node['metadata']:
                 cmd.append(' --m-%s-file %s \\\n' %
                            (name.replace('_', '-'), value))
             for name, value in node['parameters']:
@@ -208,6 +241,6 @@ if __name__ == '__main__':
     pp.pprint(nodes)
     # TODO: parse nodes into:
     #   - API format
-    nodes_to_artifact_api(nodes, args.output_dir)
+    nodes_to_q2cli(nodes, args.output_dir)
 
     # TODO: emit warning about metadata - maybe
