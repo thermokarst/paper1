@@ -19,6 +19,21 @@ def load_yaml(pathlib_path):
         return yaml.load(fh)
 
 
+def kebab(string):
+    return string.replace('_', '-')
+
+
+def kebabify_action_node(node):
+    return {
+        'plugin': node['plugin'],
+        'action': kebab(node['action']),
+        'inputs': [(kebab(x), y) for x, y in node['inputs']],
+        'metadata': [(kebab(x), y) for x, y, _ in node['metadata']],
+        'parameters': [(kebab(x), y) for x, y in node['parameters']],
+        'outputs': [(kebab(x), y) for x, y in node['outputs']],
+    }
+
+
 # https://stackoverflow.com/a/2158532/313548
 def flatten(l):
     for el in l:
@@ -184,17 +199,26 @@ def parse_provenance(final_node, output_dir):
         str(final_node.uuid),
     )
 
-    nodes = list(flatten(nodes))
+    return list(reversed(list(flatten(nodes))))
+
+
+def nodes_to_q2cli(final_filename, final_uuid, nodes, output_dir):
     results = dict()
 
     for node in nodes:
+        # TODO: need to make output dirs unique
         if node['node_type'] == 'action':
+            dirname = '%s-%s' % (node['plugin'], node['action'])
             for output in node['outputs']:
-                if output[1] not in results.keys():
+                if output[1] not in results:
                     ext = '.qzv' if output[0] == 'visualization' else '.qza'
-                    results[output[1]] = output[0] + ext
-        else:
-            results[node['output_path']] = node['input_path'] + ext
+                    results[output[1]] = dirname + '/' + output[0] + ext
+        else:  # import
+            results[node['output_path']] = node['input_path'] + '.qza'
+
+    results[final_uuid] = pathlib.Path(final_filename).name
+
+    print(results)
 
     for node_pos, node in enumerate(nodes):
         if node['node_type'] == 'action':
@@ -207,27 +231,7 @@ def parse_provenance(final_node, output_dir):
         else:
             nodes[node_pos]['output_path'] = results[node['output_path']]
 
-    nodes = list(reversed(nodes))
 
-    return nodes
-
-
-def kebab(string):
-    return string.replace('_', '-')
-
-
-def kebabify_action_node(node):
-    return {
-        'plugin': node['plugin'],
-        'action': kebab(node['action']),
-        'inputs': [(kebab(x), y) for x, y in node['inputs']],
-        'metadata': [(kebab(x), y) for x, y, _ in node['metadata']],
-        'parameters': [(kebab(x), y) for x, y in node['parameters']],
-        'outputs': [(kebab(x), y) for x, y in node['outputs']],
-    }
-
-
-def nodes_to_q2cli(nodes, output_dir):
     outfile = (output_dir / 'q2cli.sh').open('w')
     outfile.write('#!/bin/sh\n\n')
 
@@ -252,8 +256,10 @@ def nodes_to_q2cli(nodes, output_dir):
                     cmd.append(['--p-%s%s' % ('' if value else 'no-', name)])
                 elif value is not None:
                     cmd.append(['--p-%s' % name, '%s' % value])
-            for name, value in kebab_node['outputs']:
-                cmd.append(['--o-%s' % name, '%s' % value])
+            cmd.append(['--output-dir', '%s-%s' % (kebab_node['plugin'],
+                                                 kebab_node['action'])])
+            # for name, value in kebab_node['outputs']:
+            #     cmd.append(['--o-%s' % name, '%s' % value])
         else:
             cmd = [['qiime', 'tools', 'import'],
                    ['--type', "'%s'" % node['type']],
@@ -272,8 +278,8 @@ def nodes_to_q2cli(nodes, output_dir):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('final_artifact', metavar='INPUT_PATH',
-                        help='archive to parse', type=Result.load)
+    parser.add_argument('final_fp', metavar='INPUT_PATH',
+                        help='archive to parse')
     parser.add_argument('output_dir', metavar='OUTPUT_PATH',
                         help='directory to output to '
                              '(must be empty/not exist)',
@@ -281,12 +287,15 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    nodes = parse_provenance(args.final_artifact, args.output_dir)
+    final_artifact = Result.load(args.final_fp)
+
+    nodes = parse_provenance(final_artifact, args.output_dir)
 
     pp = pprint.PrettyPrinter(indent=4)
     pp.pprint(nodes)
     # TODO: parse nodes into:
     #   - API format
-    nodes_to_q2cli(nodes, args.output_dir)
+    nodes_to_q2cli(
+        args.final_fp, str(final_artifact.uuid), nodes, args.output_dir)
 
     # TODO: emit warning about metadata - maybe
