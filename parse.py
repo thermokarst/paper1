@@ -1,4 +1,5 @@
 import argparse
+import collections
 import pathlib
 import pprint
 
@@ -31,6 +32,7 @@ def kebabify_action_node(node):
         'metadata': [(kebab(x), y) for x, y, _ in node['metadata']],
         'parameters': [(kebab(x), y) for x, y in node['parameters']],
         'outputs': [(kebab(x), y) for x, y in node['outputs']],
+        'output_dir': node['output_dir'],
     }
 
 
@@ -205,20 +207,23 @@ def parse_provenance(final_node, output_dir):
 def nodes_to_q2cli(final_filename, final_uuid, nodes, output_dir):
     results = dict()
 
+    ctr = collections.Counter()
+
     for node in nodes:
-        # TODO: need to make output dirs unique
         if node['node_type'] == 'action':
             dirname = '%s-%s' % (node['plugin'], node['action'])
+            ctr.update([dirname])
+            node['output_dir'] = '%s_%d' % (dirname, ctr[dirname])
+
             for output in node['outputs']:
                 if output[1] not in results:
                     ext = '.qzv' if output[0] == 'visualization' else '.qza'
-                    results[output[1]] = dirname + '/' + output[0] + ext
+                    results[output[1]] = '%s/%s%s' % (node['output_dir'],
+                                                      output[0], ext)
         else:  # import
             results[node['output_path']] = node['input_path'] + '.qza'
 
     results[final_uuid] = pathlib.Path(final_filename).name
-
-    print(results)
 
     for node_pos, node in enumerate(nodes):
         if node['node_type'] == 'action':
@@ -230,7 +235,6 @@ def nodes_to_q2cli(final_filename, final_uuid, nodes, output_dir):
                                                           results[output[1]])
         else:
             nodes[node_pos]['output_path'] = results[node['output_path']]
-
 
     outfile = (output_dir / 'q2cli.sh').open('w')
     outfile.write('#!/bin/sh\n\n')
@@ -256,10 +260,7 @@ def nodes_to_q2cli(final_filename, final_uuid, nodes, output_dir):
                     cmd.append(['--p-%s%s' % ('' if value else 'no-', name)])
                 elif value is not None:
                     cmd.append(['--p-%s' % name, '%s' % value])
-            cmd.append(['--output-dir', '%s-%s' % (kebab_node['plugin'],
-                                                 kebab_node['action'])])
-            # for name, value in kebab_node['outputs']:
-            #     cmd.append(['--o-%s' % name, '%s' % value])
+            cmd.append(['--output-dir', kebab_node['output_dir']])
         else:
             cmd = [['qiime', 'tools', 'import'],
                    ['--type', "'%s'" % node['type']],
