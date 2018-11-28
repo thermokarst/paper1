@@ -1,5 +1,6 @@
 import argparse
 import collections
+import copy
 import pathlib
 import pprint
 
@@ -22,6 +23,14 @@ def load_yaml(pathlib_path):
 
 def kebab(string):
     return string.replace('_', '-')
+
+
+def dekebab(string):
+    return string.replace('-', '_')
+
+
+def deperiod(string):
+    return string.replace('.', '_')
 
 
 def kebabify_action(command):
@@ -289,6 +298,77 @@ def commands_to_q2cli(final_filename, final_uuid, commands, output_dir):
     outfile.close()
 
 
+def commands_to_artifact_api(final_filename, final_uuid, commands, output_dir):
+    results = dict()
+
+    ctr = collections.Counter()
+
+    for command in commands:
+        if command['command_type'] == 'action':
+            resname = '%s_%s' % (dekebab(command['plugin']),
+                                 command['action'])
+            ctr.update([resname])
+            command['result_name'] = '%s_%d' % (resname, ctr[resname])
+
+            for output in command['outputs']:
+                if output[1] not in results:
+                    results[output[1]] = '%s.%s' % (command['result_name'],
+                                                    output[0])
+        else:  # import
+            results[command['output_path']] = deperiod(command['input_path'])
+
+    results[final_uuid] = pathlib.Path(final_filename).name
+
+    for command_pos, command in enumerate(commands):
+        if command['command_type'] == 'action':
+            for input_pos, input_ in enumerate(command['inputs']):
+                commands[command_pos]['inputs'][input_pos] = \
+                    (input_[0], results[input_[1]])
+            for output_pos, output in enumerate(command['outputs']):
+                commands[command_pos]['outputs'][output_pos] = \
+                    (output[0], results[output[1]])
+        else:
+            commands[command_pos]['output_path'] = \
+                results[command['output_path']]
+
+    outfile = (output_dir / 'artifact_api.sh').open('w')
+    outfile.write('#!/usr/bin/env python\n\n')
+
+    for command in commands:
+        if command['command_type'] == 'action':
+            # TODO: "import" the plugin
+            cmd = [['%s = %s.actions.%s(' % (command['result_name'],
+                                             dekebab(command['plugin']),
+                                             command['action'])]]
+
+            for name, value in command['inputs']:
+                cmd.append(['%s=%s,' % (name, value)])
+            # TODO: load the metadata
+            for name, value, md_type in command['metadata']:
+                cmd.append(['# IMPORT METADATA'])
+                cmd.append(['%s=%s,' % (name, value)])
+            for name, value in command['parameters']:
+                cmd.append(['%s=%r,' % (name, value)])
+        else:
+            # TODO: import view_types
+            cmd = [['%s = qiime2.Artifact.import_data(' %
+                    command['output_path']],
+                   ['%r, %r, view_type=%s' % (command['type'],
+                                              command['input_path'],
+                                              command['input_format'])]]
+            cmd.append(['# IMPORT VIEW TYPE'])
+
+        cmd = [' '.join(line) for line in cmd]
+        comment_line = ['# IMPORT PLUGIN\n# plugin versions: %s'
+                        % command['plugins']]
+        first = comment_line + ['%s' % cmd[0]]
+        last = ['  %s\n)\n' % cmd[-1]]
+        cmd = first + ['  %s' % line for line in cmd[1:-1]] + last
+
+        outfile.write('%s' % '\n'.join(cmd))
+    outfile.close()
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('final_fp', metavar='INPUT_PATH',
@@ -304,9 +384,11 @@ if __name__ == '__main__':
 
     commands = parse_provenance(final_artifact, args.output_dir)
 
+    # TODO: remove this
     pp = pprint.PrettyPrinter(indent=4)
     pp.pprint(commands)
-    # TODO: parse commands into:
-    #   - API format
-    commands_to_q2cli(
-        args.final_fp, str(final_artifact.uuid), commands, args.output_dir)
+
+    commands_to_q2cli(args.final_fp, str(final_artifact.uuid),
+                      copy.deepcopy(commands), args.output_dir)
+    commands_to_artifact_api(args.final_fp, str(final_artifact.uuid),
+                             copy.deepcopy(commands), args.output_dir)
