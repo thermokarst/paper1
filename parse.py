@@ -24,15 +24,15 @@ def kebab(string):
     return string.replace('_', '-')
 
 
-def kebabify_action_node(node):
+def kebabify_action_command(command):
     return {
-        'plugin': node['plugin'],
-        'action': kebab(node['action']),
-        'inputs': [(kebab(x), y) for x, y in node['inputs']],
-        'metadata': [(kebab(x), y) for x, y, _ in node['metadata']],
-        'parameters': [(kebab(x), y) for x, y in node['parameters']],
-        'outputs': [(kebab(x), y) for x, y in node['outputs']],
-        'output_dir': node['output_dir'],
+        'plugin': command['plugin'],
+        'action': kebab(command['action']),
+        'inputs': [(kebab(x), y) for x, y in command['inputs']],
+        'metadata': [(kebab(x), y) for x, y, _ in command['metadata']],
+        'parameters': [(kebab(x), y) for x, y in command['parameters']],
+        'outputs': [(kebab(x), y) for x, y in command['outputs']],
+        'output_dir': command['output_dir'],
     }
 
 
@@ -55,24 +55,24 @@ def is_valid_outdir(parser, outdir):
     return outpath
 
 
-def get_import_input_path(node):
-    if len(node['action']['manifest']) == 1:
-        return node['action']['manifest'][0]['name']
+def get_import_input_path(command):
+    if len(command['action']['manifest']) == 1:
+        return command['action']['manifest'][0]['name']
     else:
-        return node['action']['format'] + 'import_dir'
+        return command['action']['format'] + 'import_dir'
 
 
-def get_output_name(node, uuid, prov_dir):
-    if 'output-name' in node['action']:
-        return node['action']['output-name'], str(uuid)
+def get_output_name(command, uuid, prov_dir):
+    if 'output-name' in command['action']:
+        return command['action']['output-name'], str(uuid)
     else:  # ooollldddd provenance
         alt_uuid = (prov_dir / 'artifacts' / str(uuid) / 'metadata.yaml')
         mdy = load_yaml(alt_uuid)
         return 'TOO_OLD', mdy['uuid']
 
 
-def node_is_import(node):
-    return node['action']['type'] == 'import'
+def command_is_import(command):
+    return command['action']['type'] == 'import'
 
 
 def param_is_metadata(value):
@@ -114,27 +114,28 @@ def find_metadata_path(filename, prov_dir, uuid):
         return prov_dir / 'action' / filename
 
 
-def get_import(node_actions, prov_dir, uuid):
+def get_import(command_actions, prov_dir, uuid):
     metadata_fp = prov_dir / 'artifacts' / uuid / 'metadata.yaml'
     metadata = load_yaml(metadata_fp)
 
     return {
-        'node_type': 'import',
-        'input_path': get_import_input_path(node_actions),
-        'input_format': node_actions['action']['format'],
+        'command_type': 'import',
+        'input_path': get_import_input_path(command_actions),
+        'input_format': command_actions['action']['format'],
         'type': metadata['type'],
         'output_path': str(uuid),
         'plugins': 'N/A',
+        'execution_uuid': command_actions['execution']['uuid'],
     }, []
 
 
-def get_node(node_actions, prov_dir, output_dir, uuid):
-    if node_is_import(node_actions):
-        return get_import(node_actions, prov_dir, uuid)
+def get_command(command_actions, prov_dir, output_dir, uuid):
+    if command_is_import(command_actions):
+        return get_import(command_actions, prov_dir, uuid)
 
     inputs, metadata, parameters, outputs = [], [], [], []
 
-    for param_dict in node_actions['action']['parameters']:
+    for param_dict in command_actions['action']['parameters']:
         # these dicts always have one pair
         (param, value),  = param_dict.items()
 
@@ -152,10 +153,10 @@ def get_node(node_actions, prov_dir, output_dir, uuid):
     # to either interogate the plugin signature (hard to do with old releases),
     # or, manually modify the commands generated. Another option is to use
     # "output_dir" (q2cli) and Results object (Artifact API).
-    outputs.append(get_output_name(node_actions, uuid, prov_dir))
+    outputs.append(get_output_name(command_actions, uuid, prov_dir))
 
     required_dependencies = []
-    for input_ in node_actions['action']['inputs']:
+    for input_ in command_actions['action']['inputs']:
         (input_, uuids), = input_.items()
         uuids = uuids if type(uuids) == list else [uuids]
         for uuid in uuids:
@@ -164,112 +165,125 @@ def get_node(node_actions, prov_dir, output_dir, uuid):
             inputs.append((input_, str(uuid)))
             required_dependencies.append(uuid)
 
-    plugins = node_actions['environment']['plugins']
+    plugins = command_actions['environment']['plugins']
     plugins = {plugin: plugins[plugin]['version'] for plugin in plugins}
 
-    node = {
-        'node_type': 'action',
-        'plugin': node_actions['action']['plugin'].value.split(':')[-1],
+    command = {
+        'command_type': 'action',
+        'plugin': command_actions['action']['plugin'].value.split(':')[-1],
         'plugins': plugins,
-        'action': node_actions['action']['action'],
+        'action': command_actions['action']['action'],
         'inputs': inputs,
         'metadata': metadata,
         'parameters': parameters,
         'outputs': outputs,
+        'execution_uuid': command_actions['execution']['uuid'],
     }
 
-    return node, required_dependencies
+    return command, required_dependencies
 
 
-def get_nodes(final_node_actions, prov_dir, output_dir, uuid=None):
-    node, dependencies = get_node(final_node_actions, prov_dir,
-                                  output_dir, uuid)
-    nodes = [node]
+def get_commands(final_command_actions, prov_dir, output_dir, uuid=None):
+    command, dependencies = get_command(final_command_actions, prov_dir,
+                                        output_dir, uuid)
+    commands = [command]
 
     for uuid in dependencies:
         action_yaml = prov_dir / 'artifacts' / uuid / 'action' / 'action.yaml'
-        node_action = load_yaml(action_yaml)
-        nodes.append(get_nodes(node_action, prov_dir, output_dir, uuid))
-    return nodes
+        command_action = load_yaml(action_yaml)
+        commands.append(
+            get_commands(command_action, prov_dir, output_dir, uuid))
+    return commands
 
 
-def parse_provenance(final_node, output_dir):
-    final_fp = final_node._archiver.provenance_dir / 'action' / 'action.yaml'
-    final_node_actions = load_yaml(final_fp)
+def parse_provenance(final_command, output_dir):
+    final_fp = final_command._archiver.provenance_dir / 'action'
+    final_fp = final_fp / 'action.yaml'
+    final_command_actions = load_yaml(final_fp)
 
-    nodes = get_nodes(
-        final_node_actions,
-        final_node._archiver.provenance_dir,
+    commands = get_commands(
+        final_command_actions,
+        final_command._archiver.provenance_dir,
         output_dir,
-        str(final_node.uuid),
+        str(final_command.uuid),
     )
 
-    return list(reversed(list(flatten(nodes))))
+    duped_commands = list(reversed(list(flatten(commands))))
+    deduped_commands = collections.OrderedDict([])
+    for cmd in duped_commands:
+        exec_uuid = cmd['execution_uuid']
+        if exec_uuid not in deduped_commands:
+            deduped_commands[exec_uuid] = cmd
+        else:
+            if cmd['command_type'] == 'action':
+                deduped_commands[exec_uuid]['outputs'].extend(cmd['outputs'])
+    return list(deduped_commands.values())
 
 
-def nodes_to_q2cli(final_filename, final_uuid, nodes, output_dir):
+def commands_to_q2cli(final_filename, final_uuid, commands, output_dir):
     results = dict()
 
     ctr = collections.Counter()
 
-    for node in nodes:
-        if node['node_type'] == 'action':
-            dirname = '%s-%s' % (node['plugin'], node['action'])
+    for command in commands:
+        if command['command_type'] == 'action':
+            dirname = '%s-%s' % (command['plugin'], command['action'])
             ctr.update([dirname])
-            node['output_dir'] = '%s_%d' % (dirname, ctr[dirname])
+            command['output_dir'] = '%s_%d' % (dirname, ctr[dirname])
 
-            for output in node['outputs']:
+            for output in command['outputs']:
                 if output[1] not in results:
                     ext = '.qzv' if output[0] == 'visualization' else '.qza'
-                    results[output[1]] = '%s/%s%s' % (node['output_dir'],
+                    results[output[1]] = '%s/%s%s' % (command['output_dir'],
                                                       output[0], ext)
         else:  # import
-            results[node['output_path']] = node['input_path'] + '.qza'
+            results[command['output_path']] = command['input_path'] + '.qza'
 
     results[final_uuid] = pathlib.Path(final_filename).name
 
-    for node_pos, node in enumerate(nodes):
-        if node['node_type'] == 'action':
-            for input_pos, input_ in enumerate(node['inputs']):
-                nodes[node_pos]['inputs'][input_pos] = (input_[0],
-                                                        results[input_[1]])
-            for output_pos, output in enumerate(node['outputs']):
-                nodes[node_pos]['outputs'][output_pos] = (output[0],
-                                                          results[output[1]])
+    for command_pos, command in enumerate(commands):
+        if command['command_type'] == 'action':
+            for input_pos, input_ in enumerate(command['inputs']):
+                commands[command_pos]['inputs'][input_pos] = \
+                    (input_[0], results[input_[1]])
+            for output_pos, output in enumerate(command['outputs']):
+                commands[command_pos]['outputs'][output_pos] = \
+                    (output[0], results[output[1]])
         else:
-            nodes[node_pos]['output_path'] = results[node['output_path']]
+            commands[command_pos]['output_path'] = \
+                results[command['output_path']]
 
     outfile = (output_dir / 'q2cli.sh').open('w')
     outfile.write('#!/bin/sh\n\n')
 
     # TODO: do something with plugin deps
 
-    for node in nodes:
+    for command in commands:
         # TODO: Clean this up
-        if node['node_type'] == 'action':
-            kebab_node = kebabify_action_node(node)
+        if command['command_type'] == 'action':
+            kebab_command = kebabify_action_command(command)
 
-            cmd = [['qiime', kebab_node['plugin'], kebab_node['action']]]
+            cmd = [['qiime', kebab_command['plugin'], kebab_command['action']]]
 
-            for name, value in kebab_node['inputs']:
+            for name, value in kebab_command['inputs']:
                 cmd.append(['--i-%s' % name, '%s' % value])
-            for name, value in kebab_node['metadata']:
+            for name, value in kebab_command['metadata']:
                 cmd.append(['--m-%s-file' % name, '%s' % value])
-            for name, value in kebab_node['parameters']:
+            for name, value in kebab_command['parameters']:
                 if isinstance(value, bool):
                     cmd.append(['--p-%s%s' % ('' if value else 'no-', name)])
                 elif value is not None:
                     cmd.append(['--p-%s' % name, '%s' % value])
-            cmd.append(['--output-dir', kebab_node['output_dir']])
+            cmd.append(['--output-dir', kebab_command['output_dir']])
         else:
             cmd = [['qiime', 'tools', 'import'],
-                   ['--type', "'%s'" % node['type']],
-                   ['--input-path', node['input_path']],
-                   ['--input-format', node['input_format']],
-                   ['--output-path', node['output_path']]]
+                   ['--type', "'%s'" % command['type']],
+                   ['--input-path', command['input_path']],
+                   ['--input-format', command['input_format']],
+                   ['--output-path', command['output_path']]]
 
         cmd = [' '.join(line) for line in cmd]
-        comment_line = ['# plugin versions: %s' % node['plugins']]
+        comment_line = ['# plugin versions: %s' % command['plugins']]
         first = comment_line + ['%s \\' % cmd[0]]
         last = ['  %s\n' % cmd[-1]]
         cmd = first + ['  %s \\' % line for line in cmd[1:-1]] + last
@@ -291,13 +305,13 @@ if __name__ == '__main__':
 
     final_artifact = Result.load(args.final_fp)
 
-    nodes = parse_provenance(final_artifact, args.output_dir)
+    commands = parse_provenance(final_artifact, args.output_dir)
 
     pp = pprint.PrettyPrinter(indent=4)
-    pp.pprint(nodes)
-    # TODO: parse nodes into:
+    pp.pprint(commands)
+    # TODO: parse commands into:
     #   - API format
-    nodes_to_q2cli(
-        args.final_fp, str(final_artifact.uuid), nodes, args.output_dir)
+    commands_to_q2cli(
+        args.final_fp, str(final_artifact.uuid), commands, args.output_dir)
 
     # TODO: emit warning about metadata - maybe
