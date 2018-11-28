@@ -24,12 +24,12 @@ def kebab(string):
     return string.replace('_', '-')
 
 
-def kebabify_action_command(command):
+def kebabify_action(command):
     return {
         'plugin': command['plugin'],
         'action': kebab(command['action']),
         'inputs': [(kebab(x), y) for x, y in command['inputs']],
-        'metadata': [(kebab(x), y) for x, y, _ in command['metadata']],
+        'metadata': [(kebab(x), y, z) for x, y, z in command['metadata']],
         'parameters': [(kebab(x), y) for x, y in command['parameters']],
         'outputs': [(kebab(x), y) for x, y in command['outputs']],
         'output_dir': command['output_dir'],
@@ -102,7 +102,6 @@ def load_and_interrogate_metadata(pathlib_md):
 
     # Could yield some false positives
     md_type = 'column' if qmd.column_count == 1 else 'full'
-    # TODO: figure out column name
 
     return md_type
 
@@ -144,7 +143,6 @@ def get_command(command_actions, prov_dir, output_dir, uuid):
             md_type = load_and_interrogate_metadata(md)
             metadata.append((param, '%s.tsv' % uuid, md_type))
         else:
-            # TODO: feature-classifier has `null` param vals
             parameters.append((param, value))
 
     # TODO: a "pure" provenance solution is unable to determine *all* of the
@@ -256,19 +254,18 @@ def commands_to_q2cli(final_filename, final_uuid, commands, output_dir):
     outfile = (output_dir / 'q2cli.sh').open('w')
     outfile.write('#!/bin/sh\n\n')
 
-    # TODO: do something with plugin deps
-
     for command in commands:
-        # TODO: Clean this up
         if command['command_type'] == 'action':
-            kebab_command = kebabify_action_command(command)
+            kebab_command = kebabify_action(command)
 
             cmd = [['qiime', kebab_command['plugin'], kebab_command['action']]]
 
             for name, value in kebab_command['inputs']:
                 cmd.append(['--i-%s' % name, '%s' % value])
-            for name, value in kebab_command['metadata']:
+            for name, value, md_type in kebab_command['metadata']:
                 cmd.append(['--m-%s-file' % name, '%s' % value])
+                if md_type == 'column':
+                    cmd.append(['--m-%s-column' % name, 'REPLACE_ME'])
             for name, value in kebab_command['parameters']:
                 if isinstance(value, bool):
                     cmd.append(['--p-%s%s' % ('' if value else 'no-', name)])
@@ -313,5 +310,3 @@ if __name__ == '__main__':
     #   - API format
     commands_to_q2cli(
         args.final_fp, str(final_artifact.uuid), commands, args.output_dir)
-
-    # TODO: emit warning about metadata - maybe
