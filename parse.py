@@ -124,6 +124,7 @@ def get_import(node_actions, prov_dir, uuid):
         'input_format': node_actions['action']['format'],
         'type': metadata['type'],
         'output_path': str(uuid),
+        'plugins': 'N/A',
     }, []
 
 
@@ -163,11 +164,13 @@ def get_node(node_actions, prov_dir, output_dir, uuid):
             inputs.append((input_, str(uuid)))
             required_dependencies.append(uuid)
 
+    plugins = node_actions['environment']['plugins']
+    plugins = {plugin: plugins[plugin]['version'] for plugin in plugins}
+
     node = {
         'node_type': 'action',
         'plugin': node_actions['action']['plugin'].value.split(':')[-1],
-        # TODO: clean up the content of this
-        'plugins': node_actions['environment']['plugins'],
+        'plugins': plugins,
         'action': node_actions['action']['action'],
         'inputs': inputs,
         'metadata': metadata,
@@ -246,11 +249,8 @@ def nodes_to_q2cli(final_filename, final_uuid, nodes, output_dir):
         if node['node_type'] == 'action':
             kebab_node = kebabify_action_node(node)
 
-            line = ['qiime']
-            line.append(kebab_node['plugin'])
-            line.append('%s' % kebab_node['action'])
+            cmd = [['qiime', kebab_node['plugin'], kebab_node['action']]]
 
-            cmd = [line]
             for name, value in kebab_node['inputs']:
                 cmd.append(['--i-%s' % name, '%s' % value])
             for name, value in kebab_node['metadata']:
@@ -269,7 +269,8 @@ def nodes_to_q2cli(final_filename, final_uuid, nodes, output_dir):
                    ['--output-path', node['output_path']]]
 
         cmd = [' '.join(line) for line in cmd]
-        first = ['%s \\' % cmd[0]]
+        comment_line = ['# plugin versions: %s' % node['plugins']]
+        first = comment_line + ['%s \\' % cmd[0]]
         last = ['  %s\n' % cmd[-1]]
         cmd = first + ['  %s \\' % line for line in cmd[1:-1]] + last
 
