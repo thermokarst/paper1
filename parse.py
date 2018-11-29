@@ -29,8 +29,9 @@ InputCommand = collections.namedtuple(
 )
 
 # TODO: add in more of my "learnings" notes
-
 # TODO: check funcs
+
+
 def load_yaml(pathlib_path):
     with pathlib_path.open() as fh:
         return yaml.load(fh)
@@ -246,18 +247,18 @@ def parse_provenance(final_command, output_dir):
 
 def relabel_command_inputs_and_outputs(final_filename, final_uuid, commands,
                                        q2cli=True):
-    results, output_dirs = dict(), dict()
+    results, result_list = dict(), dict()
 
     ctr = collections.Counter()
 
     for cmd in commands:
         if isinstance(cmd, ActionCommand):
-            dirname = '%s-%s' % (cmd.plugin, cmd.action)
-            ctr.update([dirname])
-            output_dir = '%s_%d' % (dirname, ctr[dirname])
+            resname = '%s-%s' % (cmd.plugin, cmd.action)
+            ctr.update([resname])
+            result_loc = '%s_%d' % (resname, ctr[resname])
             if not q2cli:
-                output_dir = dekebab(output_dir)
-            output_dirs[cmd.execution_uuid] = output_dir
+                result_loc = dekebab(result_loc)
+            result_list[cmd.execution_uuid] = result_loc
 
             for output in cmd.outputs:
                 if output.uuid not in results:
@@ -265,9 +266,9 @@ def relabel_command_inputs_and_outputs(final_filename, final_uuid, commands,
                         ext = '.qza'
                         if output.name == 'visualization':
                             ext = '.qzv'
-                        res = '%s/%s%s' % (output_dir, output.name, ext)
+                        res = '%s/%s%s' % (result_loc, output.name, ext)
                     else:
-                        res = '%s.%s' % (output_dirs[cmd.execution_uuid],
+                        res = '%s.%s' % (result_list[cmd.execution_uuid],
                                          output.name)
                     results[output.uuid] = res
         else:  # import
@@ -292,7 +293,7 @@ def relabel_command_inputs_and_outputs(final_filename, final_uuid, commands,
                     uuid=results[output.uuid]))
             relabeled_cmds.append(cmd._replace(
                 inputs=relabeled_inputs, outputs=relabeled_outputs,
-                result=output_dirs[cmd.execution_uuid]))
+                result=result_list[cmd.execution_uuid]))
         else:  # import
             relabeled_cmds.append(cmd._replace(
                 output_path=results[cmd.output_path]))
