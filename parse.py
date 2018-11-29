@@ -6,7 +6,7 @@ import pprint
 
 import yaml
 
-from qiime2 import Metadata
+import qiime2
 from qiime2.metadata.io import MetadataFileError
 from qiime2.sdk import Result
 
@@ -14,6 +14,20 @@ from qiime2.sdk import Result
 yaml.add_constructor('!ref', lambda x, y: y)
 yaml.add_constructor('!cite', lambda x, y: y)
 yaml.add_constructor('!metadata', lambda x, y: y)
+
+
+InputRecord = collections.namedtuple('InputRecord', 'name uuid')
+MetadataRecord = collections.namedtuple('MetadataRecord', 'name file type')
+ParameterRecord = collections.namedtuple('ParameterRecord', 'name value')
+OutputRecord = collections.namedtuple('OutputRecord', 'name uuid')
+ActionCommand = collections.namedtuple(
+    'ActionCommand', 'plugin plugins action inputs metadata '
+                     'parameters outputs execution_uuid output_dir'
+)
+InputCommand = collections.namedtuple(
+    'InputCommand', 'input_path input_format type output_path '
+                    'plugins execution_uuid'
+)
 
 
 def load_yaml(pathlib_path):
@@ -33,16 +47,14 @@ def deperiod(string):
     return string.replace('.', '_')
 
 
-def kebabify_action(command):
-    return {
-        'plugin': command['plugin'],
-        'action': kebab(command['action']),
-        'inputs': [(kebab(x), y) for x, y in command['inputs']],
-        'metadata': [(kebab(x), y, z) for x, y, z in command['metadata']],
-        'parameters': [(kebab(x), y) for x, y in command['parameters']],
-        'outputs': [(kebab(x), y) for x, y in command['outputs']],
-        'output_dir': command['output_dir'],
-    }
+def kebabify_action(cmd):
+    return cmd._replace(
+        action=kebab(cmd.action),
+        inputs=[(kebab(x), y) for x, y in cmd.inputs],
+        metadata=[(kebab(x), y, z) for x, y, z in cmd.metadata],
+        parameters=[(kebab(x), y) for x, y in cmd.parameters],
+        outputs=[(kebab(x), y) for x, y in cmd.outputs],
+    )
 
 
 # https://stackoverflow.com/a/2158532/313548
@@ -73,11 +85,12 @@ def get_import_input_path(command):
 
 def get_output_name(command, uuid, prov_dir):
     if 'output-name' in command['action']:
-        return command['action']['output-name'], str(uuid)
+        return OutputRecord(name=command['action']['output-name'],
+                            uuid=str(uuid))
     else:  # ooollldddd provenance
         alt_uuid = (prov_dir / 'artifacts' / str(uuid) / 'metadata.yaml')
         mdy = load_yaml(alt_uuid)
-        return 'TOO_OLD', mdy['uuid']
+        return OutputRecord(name='TOO_OLD', uuid=mdy['uuid'])
 
 
 def command_is_import(command):
@@ -90,7 +103,7 @@ def param_is_metadata(value):
 
 def load_and_interrogate_metadata(pathlib_md):
     try:
-        qmd = Metadata.load(str(pathlib_md))
+        qmd = qiime2.Metadata.load(str(pathlib_md))
     except MetadataFileError as e:
         if 'Found unrecognized ID column name' in str(e):
             # This happens when the header row is missing, which is
@@ -105,7 +118,7 @@ def load_and_interrogate_metadata(pathlib_md):
                 first_line[0] = 'id'
                 fh.seek(0, 0)
                 fh.write('\t'.join(first_line) + '\n' + content)
-            qmd = Metadata.load(str(md))
+            qmd = qiime2.Metadata.load(str(md))
         else:
             raise e
 
@@ -126,15 +139,14 @@ def get_import(command_actions, prov_dir, uuid):
     metadata_fp = prov_dir / 'artifacts' / uuid / 'metadata.yaml'
     metadata = load_yaml(metadata_fp)
 
-    return {
-        'command_type': 'import',
-        'input_path': get_import_input_path(command_actions),
-        'input_format': command_actions['action']['format'],
-        'type': metadata['type'],
-        'output_path': str(uuid),
-        'plugins': 'N/A',
-        'execution_uuid': command_actions['execution']['uuid'],
-    }, []
+    return InputCommand(
+        input_path=get_import_input_path(command_actions),
+        input_format=command_actions['action']['format'],
+        type=metadata['type'],
+        output_path=str(uuid),
+        plugins='N/A',
+        execution_uuid=command_actions['execution']['uuid'],
+    ), []
 
 
 def get_command(command_actions, prov_dir, output_dir, uuid):
@@ -150,9 +162,10 @@ def get_command(command_actions, prov_dir, output_dir, uuid):
         if param_is_metadata(value):
             md = find_metadata_path(value.value, prov_dir, uuid)
             md_type = load_and_interrogate_metadata(md)
-            metadata.append((param, '%s.tsv' % uuid, md_type))
+            metadata.append(MetadataRecord(
+                name=param, file='%s.tsv' % uuid, type=md_type))
         else:
-            parameters.append((param, value))
+            parameters.append(ParameterRecord(name=param, value=value))
 
     # TODO: a "pure" provenance solution is unable to determine *all* of the
     # outputs created by an action (unless of course they are somehow all
@@ -169,23 +182,23 @@ def get_command(command_actions, prov_dir, output_dir, uuid):
         for uuid in uuids:
             if uuid is None:
                 continue
-            inputs.append((input_, str(uuid)))
+            inputs.append(InputRecord(name=input_, uuid=str(uuid)))
             required_dependencies.append(uuid)
 
     plugins = command_actions['environment']['plugins']
     plugins = {plugin: plugins[plugin]['version'] for plugin in plugins}
 
-    command = {
-        'command_type': 'action',
-        'plugin': command_actions['action']['plugin'].value.split(':')[-1],
-        'plugins': plugins,
-        'action': command_actions['action']['action'],
-        'inputs': inputs,
-        'metadata': metadata,
-        'parameters': parameters,
-        'outputs': outputs,
-        'execution_uuid': command_actions['execution']['uuid'],
-    }
+    command = ActionCommand(
+        plugin=command_actions['action']['plugin'].value.split(':')[-1],
+        plugins=plugins,
+        action=command_actions['action']['action'],
+        inputs=inputs,
+        metadata=metadata,
+        parameters=parameters,
+        outputs=outputs,
+        execution_uuid=command_actions['execution']['uuid'],
+        output_dir='',
+    )
 
     return command, required_dependencies
 
@@ -218,78 +231,90 @@ def parse_provenance(final_command, output_dir):
     duped_commands = list(reversed(list(flatten(commands))))
     deduped_commands = collections.OrderedDict([])
     for cmd in duped_commands:
-        exec_uuid = cmd['execution_uuid']
+        exec_uuid = cmd.execution_uuid
         if exec_uuid not in deduped_commands:
             deduped_commands[exec_uuid] = cmd
         else:
-            if cmd['command_type'] == 'action':
-                deduped_commands[exec_uuid]['outputs'].extend(cmd['outputs'])
+            if isinstance(cmd, ActionCommand):
+                parent_cmd = deduped_commands[exec_uuid]
+                deduped_commands[exec_uuid] = \
+                    parent_cmd._replace(
+                        outputs=parent_cmd.outputs + cmd.outputs)
     return list(deduped_commands.values())
 
 
-def commands_to_q2cli(final_filename, final_uuid, commands, output_dir):
-    results = dict()
+def commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
+    results, output_dirs = dict(), dict()
 
     ctr = collections.Counter()
 
-    for command in commands:
-        if command['command_type'] == 'action':
-            dirname = '%s-%s' % (command['plugin'], command['action'])
+    for cmd in commands:
+        if isinstance(cmd, ActionCommand):
+            dirname = '%s-%s' % (cmd.plugin, cmd.action)
             ctr.update([dirname])
-            command['output_dir'] = '%s_%d' % (dirname, ctr[dirname])
+            output_dir = '%s_%d' % (dirname, ctr[dirname])
+            output_dirs[cmd.execution_uuid] = output_dir
 
-            for output in command['outputs']:
-                if output[1] not in results:
-                    ext = '.qzv' if output[0] == 'visualization' else '.qza'
-                    results[output[1]] = '%s/%s%s' % (command['output_dir'],
-                                                      output[0], ext)
+            for output in cmd.outputs:
+                if output.uuid not in results:
+                    ext = '.qzv' if output.name == 'visualization' else '.qza'
+                    results[output.uuid] = '%s/%s%s' % (output_dir,
+                                                        output.name, ext)
         else:  # import
-            results[command['output_path']] = command['input_path'] + '.qza'
+            results[cmd.output_path] = cmd.input_path + '.qza'
 
     results[final_uuid] = pathlib.Path(final_filename).name
 
-    for command_pos, command in enumerate(commands):
-        if command['command_type'] == 'action':
-            for input_pos, input_ in enumerate(command['inputs']):
-                commands[command_pos]['inputs'][input_pos] = \
-                    (input_[0], results[input_[1]])
-            for output_pos, output in enumerate(command['outputs']):
-                commands[command_pos]['outputs'][output_pos] = \
-                    (output[0], results[output[1]])
+    relabeled_cmds = []
+    for cmd in commands:
+        if isinstance(cmd, ActionCommand):
+            relabeled_inputs = []
+            for input_ in cmd.inputs:
+                relabeled_inputs.append(InputRecord(name=input_.name,
+                                        uuid=results[input_.uuid]))
+            relabeled_outputs = []
+            for output in cmd.outputs:
+                relabeled_outputs.append(OutputRecord(output.name,
+                                                      results[output.uuid]))
+            relabeled_cmd = cmd._replace(
+                inputs=relabeled_inputs, outputs=relabeled_outputs,
+                output_dir=output_dirs[cmd.execution_uuid])
+            relabeled_cmds.append(relabeled_cmd)
         else:
-            commands[command_pos]['output_path'] = \
-                results[command['output_path']]
+            relabeled_cmd = cmd._replace(
+                output_path=results[cmd.output_path])
+            relabeled_cmds.append(relabeled_cmd)
 
-    outfile = (output_dir / 'q2cli.sh').open('w')
+    outfile = (script_dir / 'q2cli.sh').open('w')
     outfile.write('#!/bin/sh\n\n')
 
-    for command in commands:
-        if command['command_type'] == 'action':
-            kebab_command = kebabify_action(command)
+    for command in relabeled_cmds:
+        if isinstance(command, ActionCommand):
+            kcmd = kebabify_action(command)
 
-            cmd = [['qiime', kebab_command['plugin'], kebab_command['action']]]
+            cmd = [['qiime', kcmd.plugin, kcmd.action]]
 
-            for name, value in kebab_command['inputs']:
+            for name, value in kcmd.inputs:
                 cmd.append(['--i-%s' % name, '%s' % value])
-            for name, value, md_type in kebab_command['metadata']:
+            for name, value, md_type in kcmd.metadata:
                 cmd.append(['--m-%s-file' % name, '%s' % value])
                 if md_type == 'column':
                     cmd.append(['--m-%s-column' % name, 'REPLACE_ME'])
-            for name, value in kebab_command['parameters']:
+            for name, value in kcmd.parameters:
                 if isinstance(value, bool):
                     cmd.append(['--p-%s%s' % ('' if value else 'no-', name)])
                 elif value is not None:
                     cmd.append(['--p-%s' % name, '%s' % value])
-            cmd.append(['--output-dir', kebab_command['output_dir']])
+            cmd.append(['--output-dir', kcmd.output_dir])
         else:
             cmd = [['qiime', 'tools', 'import'],
-                   ['--type', "'%s'" % command['type']],
-                   ['--input-path', command['input_path']],
-                   ['--input-format', command['input_format']],
-                   ['--output-path', command['output_path']]]
+                   ['--type', "'%s'" % command.type],
+                   ['--input-path', command.input_path],
+                   ['--input-format', command.input_format],
+                   ['--output-path', command.output_path]]
 
         cmd = [' '.join(line) for line in cmd]
-        comment_line = ['# plugin versions: %s' % command['plugins']]
+        comment_line = ['# plugin versions: %s' % command.plugins]
         first = comment_line + ['%s \\' % cmd[0]]
         last = ['  %s\n' % cmd[-1]]
         cmd = first + ['  %s \\' % line for line in cmd[1:-1]] + last
@@ -384,11 +409,7 @@ if __name__ == '__main__':
 
     commands = parse_provenance(final_artifact, args.output_dir)
 
-    # TODO: remove this
-    pp = pprint.PrettyPrinter(indent=4)
-    pp.pprint(commands)
-
     commands_to_q2cli(args.final_fp, str(final_artifact.uuid),
-                      copy.deepcopy(commands), args.output_dir)
+                      commands, args.output_dir)
     commands_to_artifact_api(args.final_fp, str(final_artifact.uuid),
                              copy.deepcopy(commands), args.output_dir)
