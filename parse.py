@@ -2,7 +2,6 @@ import argparse
 import collections
 import copy
 import pathlib
-import pprint
 
 import yaml
 
@@ -22,7 +21,7 @@ ParameterRecord = collections.namedtuple('ParameterRecord', 'name value')
 OutputRecord = collections.namedtuple('OutputRecord', 'name uuid')
 ActionCommand = collections.namedtuple(
     'ActionCommand', 'plugin plugins action inputs metadata '
-                     'parameters outputs execution_uuid output_dir'
+                     'parameters outputs execution_uuid result'
 )
 InputCommand = collections.namedtuple(
     'InputCommand', 'input_path input_format type output_path '
@@ -197,7 +196,7 @@ def get_command(command_actions, prov_dir, output_dir, uuid):
         parameters=parameters,
         outputs=outputs,
         execution_uuid=command_actions['execution']['uuid'],
-        output_dir='',
+        result='',
     )
 
     return command, required_dependencies
@@ -269,21 +268,21 @@ def commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
     for cmd in commands:
         if isinstance(cmd, ActionCommand):
             relabeled_inputs = []
+            # TODO: add in _replace where it makes sense
             for input_ in cmd.inputs:
                 relabeled_inputs.append(InputRecord(name=input_.name,
                                         uuid=results[input_.uuid]))
             relabeled_outputs = []
+            # TODO: add in _replace where it makes sense
             for output in cmd.outputs:
                 relabeled_outputs.append(OutputRecord(output.name,
                                                       results[output.uuid]))
-            relabeled_cmd = cmd._replace(
+            relabeled_cmds.append(cmd._replace(
                 inputs=relabeled_inputs, outputs=relabeled_outputs,
-                output_dir=output_dirs[cmd.execution_uuid])
-            relabeled_cmds.append(relabeled_cmd)
+                result=output_dirs[cmd.execution_uuid]))
         else:
-            relabeled_cmd = cmd._replace(
-                output_path=results[cmd.output_path])
-            relabeled_cmds.append(relabeled_cmd)
+            relabeled_cmds.append(cmd._replace(
+                output_path=results[cmd.output_path]))
 
     outfile = (script_dir / 'q2cli.sh').open('w')
     outfile.write('#!/bin/sh\n\n')
@@ -305,7 +304,7 @@ def commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
                     cmd.append(['--p-%s%s' % ('' if value else 'no-', name)])
                 elif value is not None:
                     cmd.append(['--p-%s' % name, '%s' % value])
-            cmd.append(['--output-dir', kcmd.output_dir])
+            cmd.append(['--output-dir', kcmd.result])
         else:
             cmd = [['qiime', 'tools', 'import'],
                    ['--type', "'%s'" % command.type],
@@ -324,73 +323,80 @@ def commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
 
 
 def commands_to_artifact_api(final_filename, final_uuid, commands, output_dir):
-    results = dict()
+    # TODO: naming
+    # TODO: refactor and DRY with above implementation
+    results, result_list = dict(), dict()
 
     ctr = collections.Counter()
 
-    for command in commands:
-        if command['command_type'] == 'action':
-            resname = '%s_%s' % (dekebab(command['plugin']),
-                                 command['action'])
+    for cmd in commands:
+        if isinstance(cmd, ActionCommand):
+            resname = '%s_%s' % (dekebab(cmd.plugin), cmd.action)
             ctr.update([resname])
-            command['result_name'] = '%s_%d' % (resname, ctr[resname])
+            result_list[cmd.execution_uuid] = '%s_%d' % (resname, ctr[resname])
 
-            for output in command['outputs']:
-                if output[1] not in results:
-                    results[output[1]] = '%s.%s' % (command['result_name'],
-                                                    output[0])
+            for output in cmd.outputs:
+                if output.uuid not in results:
+                    results[output.uuid] = '%s.%s' % (
+                        result_list[cmd.execution_uuid], output.name)
         else:  # import
-            results[command['output_path']] = deperiod(command['input_path'])
+            results[cmd.output_path] = deperiod(cmd.input_path)
 
     results[final_uuid] = pathlib.Path(final_filename).name
 
-    for command_pos, command in enumerate(commands):
-        if command['command_type'] == 'action':
-            for input_pos, input_ in enumerate(command['inputs']):
-                commands[command_pos]['inputs'][input_pos] = \
-                    (input_[0], results[input_[1]])
-            for output_pos, output in enumerate(command['outputs']):
-                commands[command_pos]['outputs'][output_pos] = \
-                    (output[0], results[output[1]])
+    relabeled_cmds = []
+    for cmd in commands:
+        if isinstance(cmd, ActionCommand):
+            relabeled_inputs = []
+            for input_ in cmd.inputs:
+                relabeled_inputs.append(input_._replace(
+                    uuid=results[input_.uuid]))
+            relabeled_outputs = []
+            for output in cmd.outputs:
+                relabeled_outputs.append(output._replace(
+                    uuid=results[output.uuid]))
+            relabeled_cmds.append(cmd._replace(
+                inputs=relabeled_inputs, outputs=relabeled_outputs,
+                result=result_list[cmd.execution_uuid]))
         else:
-            commands[command_pos]['output_path'] = \
-                results[command['output_path']]
+            relabeled_cmds.append(cmd._replace(
+                output_path=results[cmd.output_path]))
 
     outfile = (output_dir / 'artifact_api.sh').open('w')
     outfile.write('#!/usr/bin/env python\n\n')
 
-    for command in commands:
-        if command['command_type'] == 'action':
+    for command in relabeled_cmds:
+        if isinstance(command, ActionCommand):
             # TODO: "import" the plugin
-            cmd = [['%s = %s.actions.%s(' % (command['result_name'],
-                                             dekebab(command['plugin']),
-                                             command['action'])]]
+            cmd = [['%s = %s.actions.%s(' % (command.result,
+                                             dekebab(command.plugin),
+                                             command.action)]]
 
-            for name, value in command['inputs']:
+            for name, value in command.inputs:
                 cmd.append(['%s=%s,' % (name, value)])
             # TODO: load the metadata
-            for name, value, md_type in command['metadata']:
+            for name, value, md_type in command.metadata:
                 cmd.append(['# IMPORT METADATA'])
                 cmd.append(['%s=%s,' % (name, value)])
-            for name, value in command['parameters']:
+            for name, value in command.parameters:
                 cmd.append(['%s=%r,' % (name, value)])
         else:
             # TODO: import view_types
-            cmd = [['%s = qiime2.Artifact.import_data(' %
-                    command['output_path']],
-                   ['%r, %r, view_type=%s' % (command['type'],
-                                              command['input_path'],
-                                              command['input_format'])]]
+            cmd = [['%s = qiime2.Artifact.import_data(' % command.output_path],
+                   ['%r, %r, view_type=%s' % (command.type, command.input_path,
+                                              command.input_format)]]
             cmd.append(['# IMPORT VIEW TYPE'])
 
         cmd = [' '.join(line) for line in cmd]
         comment_line = ['# IMPORT PLUGIN\n# plugin versions: %s'
-                        % command['plugins']]
+                        % command.plugins]
         first = comment_line + ['%s' % cmd[0]]
         last = ['  %s\n)\n' % cmd[-1]]
         cmd = first + ['  %s' % line for line in cmd[1:-1]] + last
 
         outfile.write('%s' % '\n'.join(cmd))
+
+    # TODO: need to save the resultant viz
     outfile.close()
 
 
