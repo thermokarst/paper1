@@ -351,21 +351,24 @@ def commands_to_artifact_api(final_filename, final_uuid, commands, output_dir):
     outfile = (output_dir / 'artifact_api.sh').open('w')
     outfile.write('#!/usr/bin/env python\n\n')
 
+    fmt_cmds, plugins, metadata = [], set(), []
     for command in relabeled_cmds:
         if isinstance(command, ActionCommand):
-            # TODO: "import" the plugin
-            cmd = [['%s = %s.actions.%s(' % (command.result,
-                                             dekebab(command.plugin),
+            plugin = dekebab(command.plugin)
+
+            plugins.add(plugin)
+
+            cmd = [['%s = %s.actions.%s(' % (command.result, plugin,
                                              command.action)]]
 
             for name, value in command.inputs:
                 cmd.append(['%s=%s,' % (name, value)])
             # TODO: load the metadata
             for name, value, md_type in command.metadata:
-                cmd.append(['# IMPORT METADATA'])
                 cmd.append(['%s=%s,' % (name, value)])
             for name, value in command.parameters:
                 cmd.append(['%s=%r,' % (name, value)])
+
         else:
             # TODO: import view_types
             cmd = [['%s = qiime2.Artifact.import_data(' % command.output_path],
@@ -373,13 +376,19 @@ def commands_to_artifact_api(final_filename, final_uuid, commands, output_dir):
                                               command.input_format)]]
             cmd.append(['# IMPORT VIEW TYPE'])
 
+
         cmd = [' '.join(line) for line in cmd]
-        comment_line = ['# IMPORT PLUGIN\n# plugin versions: %s'
-                        % command.plugins]
+        comment_line = ['# plugin versions: %s' % command.plugins]
         first = comment_line + ['%s' % cmd[0]]
         last = ['  %s\n)\n' % cmd[-1]]
-        cmd = first + ['  %s' % line for line in cmd[1:-1]] + last
+        fmt_cmds.append(first + ['  %s' % line for line in cmd[1:-1]] + last)
 
+    for plugin in plugins:
+        outfile.write('from qiime2.plugins import %s\n' % plugin)
+
+    outfile.write('\n')
+
+    for cmd in fmt_cmds:
         outfile.write('%s' % '\n'.join(cmd))
 
     # TODO: need to save the resultant viz
