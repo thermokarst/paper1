@@ -255,6 +255,8 @@ def relabel_command_inputs_and_outputs(final_filename, final_uuid, commands,
             dirname = '%s-%s' % (cmd.plugin, cmd.action)
             ctr.update([dirname])
             output_dir = '%s_%d' % (dirname, ctr[dirname])
+            if not q2cli:
+                output_dir = dekebab(output_dir)
             output_dirs[cmd.execution_uuid] = output_dir
 
             for output in cmd.outputs:
@@ -269,7 +271,11 @@ def relabel_command_inputs_and_outputs(final_filename, final_uuid, commands,
                                          output.name)
                     results[output.uuid] = res
         else:  # import
-            results[cmd.output_path] = cmd.input_path + '.qza'
+            if q2cli:
+                res = cmd.input_path + '.qza'
+            else:
+                res = deperiod(cmd.input_path)
+            results[cmd.output_path] = res
 
     results[final_uuid] = pathlib.Path(final_filename).name
 
@@ -287,7 +293,7 @@ def relabel_command_inputs_and_outputs(final_filename, final_uuid, commands,
             relabeled_cmds.append(cmd._replace(
                 inputs=relabeled_inputs, outputs=relabeled_outputs,
                 result=output_dirs[cmd.execution_uuid]))
-        else:
+        else:  # import
             relabeled_cmds.append(cmd._replace(
                 output_path=results[cmd.output_path]))
     return relabeled_cmds
