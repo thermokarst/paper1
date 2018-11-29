@@ -28,7 +28,9 @@ InputCommand = collections.namedtuple(
                     'plugins execution_uuid'
 )
 
+# TODO: add in more of my "learnings" notes
 
+# TODO: check funcs
 def load_yaml(pathlib_path):
     with pathlib_path.open() as fh:
         return yaml.load(fh)
@@ -242,7 +244,8 @@ def parse_provenance(final_command, output_dir):
     return list(deduped_commands.values())
 
 
-def commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
+def relabel_command_inputs_and_outputs(final_filename, final_uuid, commands,
+                                       q2cli=True):
     results, output_dirs = dict(), dict()
 
     ctr = collections.Counter()
@@ -256,9 +259,15 @@ def commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
 
             for output in cmd.outputs:
                 if output.uuid not in results:
-                    ext = '.qzv' if output.name == 'visualization' else '.qza'
-                    results[output.uuid] = '%s/%s%s' % (output_dir,
-                                                        output.name, ext)
+                    if q2cli:
+                        ext = '.qza'
+                        if output.name == 'visualization':
+                            ext = '.qzv'
+                        res = '%s/%s%s' % (output_dir, output.name, ext)
+                    else:
+                        res = '%s.%s' % (output_dirs[cmd.execution_uuid],
+                                         output.name)
+                    results[output.uuid] = res
         else:  # import
             results[cmd.output_path] = cmd.input_path + '.qza'
 
@@ -268,21 +277,26 @@ def commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
     for cmd in commands:
         if isinstance(cmd, ActionCommand):
             relabeled_inputs = []
-            # TODO: add in _replace where it makes sense
             for input_ in cmd.inputs:
-                relabeled_inputs.append(InputRecord(name=input_.name,
-                                        uuid=results[input_.uuid]))
+                relabeled_inputs.append(input_._replace(
+                    uuid=results[input_.uuid]))
             relabeled_outputs = []
-            # TODO: add in _replace where it makes sense
             for output in cmd.outputs:
-                relabeled_outputs.append(OutputRecord(output.name,
-                                                      results[output.uuid]))
+                relabeled_outputs.append(input_._replace(
+                    uuid=results[output.uuid]))
             relabeled_cmds.append(cmd._replace(
                 inputs=relabeled_inputs, outputs=relabeled_outputs,
                 result=output_dirs[cmd.execution_uuid]))
         else:
             relabeled_cmds.append(cmd._replace(
                 output_path=results[cmd.output_path]))
+    return relabeled_cmds
+
+
+def commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
+    relabeled_cmds = relabel_command_inputs_and_outputs(final_filename,
+                                                        final_uuid,
+                                                        commands)
 
     outfile = (script_dir / 'q2cli.sh').open('w')
     outfile.write('#!/bin/sh\n\n')
@@ -323,44 +337,9 @@ def commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
 
 
 def commands_to_artifact_api(final_filename, final_uuid, commands, output_dir):
-    # TODO: naming
-    # TODO: refactor and DRY with above implementation
-    results, result_list = dict(), dict()
-
-    ctr = collections.Counter()
-
-    for cmd in commands:
-        if isinstance(cmd, ActionCommand):
-            resname = '%s_%s' % (dekebab(cmd.plugin), cmd.action)
-            ctr.update([resname])
-            result_list[cmd.execution_uuid] = '%s_%d' % (resname, ctr[resname])
-
-            for output in cmd.outputs:
-                if output.uuid not in results:
-                    results[output.uuid] = '%s.%s' % (
-                        result_list[cmd.execution_uuid], output.name)
-        else:  # import
-            results[cmd.output_path] = deperiod(cmd.input_path)
-
-    results[final_uuid] = pathlib.Path(final_filename).name
-
-    relabeled_cmds = []
-    for cmd in commands:
-        if isinstance(cmd, ActionCommand):
-            relabeled_inputs = []
-            for input_ in cmd.inputs:
-                relabeled_inputs.append(input_._replace(
-                    uuid=results[input_.uuid]))
-            relabeled_outputs = []
-            for output in cmd.outputs:
-                relabeled_outputs.append(output._replace(
-                    uuid=results[output.uuid]))
-            relabeled_cmds.append(cmd._replace(
-                inputs=relabeled_inputs, outputs=relabeled_outputs,
-                result=result_list[cmd.execution_uuid]))
-        else:
-            relabeled_cmds.append(cmd._replace(
-                output_path=results[cmd.output_path]))
+    relabeled_cmds = relabel_command_inputs_and_outputs(final_filename,
+                                                        final_uuid,
+                                                        commands, q2cli=False)
 
     outfile = (output_dir / 'artifact_api.sh').open('w')
     outfile.write('#!/usr/bin/env python\n\n')
