@@ -363,14 +363,15 @@ def commands_to_artifact_api(final_filename, final_uuid, commands, output_dir):
 
             for name, value in command.inputs:
                 cmd.append(['%s=%s,' % (name, value)])
-            # TODO: load the metadata
-            for name, value, md_type in command.metadata:
-                cmd.append(['%s=%s,' % (name, value)])
+            for md in command.metadata:
+                name, value, md_type = md
+                var_name = deperiod(value)
+                metadata.append({var_name: md})
+                cmd.append(['%s=%s,' % (name, var_name)])
             for name, value in command.parameters:
                 cmd.append(['%s=%r,' % (name, value)])
 
         else:
-            # TODO: import view_types
             cmd = [['%s = qiime2.Artifact.import_data(' % command.output_path],
                    ['%r, %r, view_type=%s' % (command.type, command.input_path,
                                               command.input_format)]]
@@ -386,7 +387,18 @@ def commands_to_artifact_api(final_filename, final_uuid, commands, output_dir):
     for plugin in plugins:
         outfile.write('from qiime2.plugins import %s\n' % plugin)
 
-    outfile.write('\n')
+    outfile.write('\n\n')
+
+    for md in metadata:
+        (var_name, mdr), = md.items()
+        if mdr.type == 'full':
+            cmd = '%s = qiime2.Metadata.load(%r)\n' % (var_name, mdr.file)
+        else:
+            vals = (var_name, 'REPLACE_ME', mdr.file, 'REPLACE_ME')
+            cmd = '%s_%s = qiime2.Metadata.load(%r).get_column(%r)\n' % vals
+        outfile.write(cmd)
+
+    outfile.write('\n\n')
 
     for cmd in fmt_cmds:
         outfile.write('%s' % '\n'.join(cmd))
@@ -413,4 +425,4 @@ if __name__ == '__main__':
     commands_to_q2cli(args.final_fp, str(final_artifact.uuid),
                       commands, args.output_dir)
     commands_to_artifact_api(args.final_fp, str(final_artifact.uuid),
-                             copy.deepcopy(commands), args.output_dir)
+                             commands, args.output_dir)
