@@ -28,6 +28,8 @@ InputCommand = collections.namedtuple(
 )
 
 
+# Utils
+
 def load_yaml(pathlib_path):
     with pathlib_path.open() as fh:
         return yaml.load(fh)
@@ -154,7 +156,9 @@ def get_import(command_actions, prov_dir, uuid):
         input_format=command_actions['action']['format'],
         type=metadata['type'],
         output_path=str(uuid),
-        plugins='N/A',
+        plugins=dict(
+            framework=command_actions['environment']['framework']['version'],
+        ),
         execution_uuid=command_actions['execution']['uuid'],
     ), []
 
@@ -345,7 +349,7 @@ def render_commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
                    ['--output-path', command.output_path]]
 
         cmd = [' '.join(line) for line in cmd]
-        comment_line = ['# plugin versions: %s' % command.plugins]
+        comment_line = ['# versions: %s' % command.plugins]
         first = comment_line + ['%s \\' % cmd[0]]
         last = ['  %s\n' % cmd[-1]]
         cmd = first + ['  %s \\' % line for line in cmd[1:-1]] + last
@@ -393,7 +397,7 @@ def render_commands_to_artifact_api(final_filename, final_uuid, commands,
             cmd.append(['# IMPORT VIEW TYPE'])
 
         cmd = [' '.join(line) for line in cmd]
-        comment_line = ['# plugin versions: %s' % command.plugins]
+        comment_line = ['# versions: %s' % command.plugins]
         first = comment_line + ['%s' % cmd[0]]
         last = ['  %s\n)\n' % cmd[-1]]
         fmt_cmds.append(first + ['  %s' % line for line in cmd[1:-1]] + last)
