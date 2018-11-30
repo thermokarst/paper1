@@ -1,6 +1,5 @@
 import argparse
 import collections
-import copy
 import pathlib
 
 import yaml
@@ -27,9 +26,6 @@ InputCommand = collections.namedtuple(
     'InputCommand', 'input_path input_format type output_path '
                     'plugins execution_uuid'
 )
-
-# TODO: add in more of my "learnings" notes
-# TODO: check funcs
 
 
 def load_yaml(pathlib_path):
@@ -89,7 +85,8 @@ def get_output_name(command, uuid, prov_dir):
     if 'output-name' in command['action']:
         return OutputRecord(name=command['action']['output-name'],
                             uuid=str(uuid))
-    else:  # ooollldddd provenance
+    else:
+        # V1 archive format doesn't know it's output name
         alt_uuid = (prov_dir / 'artifacts' / str(uuid) / 'metadata.yaml')
         mdy = load_yaml(alt_uuid)
         return OutputRecord(name='TOO_OLD', uuid=mdy['uuid'])
@@ -104,18 +101,24 @@ def param_is_metadata(value):
 
 
 def load_and_interrogate_metadata(pathlib_md):
+    # Generally speaking, learning about metadata from provenance is
+    # cumbersome --- there is currently know way to fully know if metadata
+    # represents `Metadata`, or `MetadataColumn`.
     try:
         qmd = qiime2.Metadata.load(str(pathlib_md))
     except MetadataFileError as e:
         if 'Found unrecognized ID column name' in str(e):
             # This happens when the header row is missing, which is
-            # apparently a common thing in pre-2018 provenance.
+            # apparently a common thing in pre-2018 Artifact (late 2017/early
+            # 2018 is when we overhauled Metadata).
             md = pathlib_md.parent / 'modified_md.tsv'
             md.write_text(pathlib_md.read_text())
             with md.open('r+') as fh:
                 content = fh.read()
                 # Gross hack - seed new header row with data from
-                # first row.
+                # first row, since we have no clue what the column names
+                # actually are. We could also make stand-in vals (e.g. col1,
+                # col2, col3, etc).
                 first_line = content.split('\n', 1)[0].split('\t')
                 first_line[0] = 'id'
                 fh.seek(0, 0)
@@ -124,9 +127,14 @@ def load_and_interrogate_metadata(pathlib_md):
         else:
             raise e
 
-    # Could yield some false positives
+    # Could yield some false positives for the reasons indicated above.
     md_type = 'column' if qmd.column_count == 1 else 'full'
 
+    # In the future this function could actually extract Metadata from
+    # provenance and return it to the user. The hard part is for large analyses
+    # you can wind up with many of these file, and figuring out which ones
+    # belong to the same ID set is tricky, especially if you include the
+    # pre-2018 Metadata epoch.
     return md_type
 
 
@@ -158,7 +166,7 @@ def get_command(command_actions, prov_dir, output_dir, uuid):
     inputs, metadata, parameters, outputs = [], [], [], []
 
     for param_dict in command_actions['action']['parameters']:
-        # these dicts always have one pair
+        # these dicts always have exactly one pair
         (param, value),  = param_dict.items()
 
         if param_is_metadata(value):
@@ -167,9 +175,12 @@ def get_command(command_actions, prov_dir, output_dir, uuid):
             metadata.append(MetadataRecord(
                 name=param, file='%s.tsv' % uuid, type=md_type))
         else:
+            # It would be really cool if we knew that a value here was the
+            # default value or not (or, if the value itself was specified by
+            # the user, even if it is the same as the default).
             parameters.append(ParameterRecord(name=param, value=value))
 
-    # TODO: a "pure" provenance solution is unable to determine *all* of the
+    # A "pure" provenance solution is unable to determine *all* of the
     # outputs created by an action (unless of course they are somehow all
     # present in the prov graph) --- this means that at present we will need
     # to either interogate the plugin signature (hard to do with old releases),
@@ -300,7 +311,7 @@ def relabel_command_inputs_and_outputs(final_filename, final_uuid, commands,
     return relabeled_cmds
 
 
-def commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
+def render_commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
     relabeled_cmds = relabel_command_inputs_and_outputs(final_filename,
                                                         final_uuid,
                                                         commands)
@@ -343,7 +354,8 @@ def commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
     outfile.close()
 
 
-def commands_to_artifact_api(final_filename, final_uuid, commands, output_dir):
+def render_commands_to_artifact_api(final_filename, final_uuid, commands,
+                                    output_dir):
     relabeled_cmds = relabel_command_inputs_and_outputs(final_filename,
                                                         final_uuid,
                                                         commands, q2cli=False)
@@ -377,7 +389,6 @@ def commands_to_artifact_api(final_filename, final_uuid, commands, output_dir):
                                               command.input_format)]]
             cmd.append(['# IMPORT VIEW TYPE'])
 
-
         cmd = [' '.join(line) for line in cmd]
         comment_line = ['# plugin versions: %s' % command.plugins]
         first = comment_line + ['%s' % cmd[0]]
@@ -403,7 +414,6 @@ def commands_to_artifact_api(final_filename, final_uuid, commands, output_dir):
     for cmd in fmt_cmds:
         outfile.write('%s' % '\n'.join(cmd))
 
-    # TODO: need to save the resultant viz
     outfile.close()
 
 
@@ -420,9 +430,10 @@ if __name__ == '__main__':
 
     final_artifact = Result.load(args.final_fp)
 
+    # Prepares an ordered, abstract representation of the commands run.
     commands = parse_provenance(final_artifact, args.output_dir)
 
-    commands_to_q2cli(args.final_fp, str(final_artifact.uuid),
-                      commands, args.output_dir)
-    commands_to_artifact_api(args.final_fp, str(final_artifact.uuid),
+    render_commands_to_q2cli(args.final_fp, str(final_artifact.uuid),
                              commands, args.output_dir)
+    render_commands_to_artifact_api(args.final_fp, str(final_artifact.uuid),
+                                    commands, args.output_dir)
