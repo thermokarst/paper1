@@ -153,6 +153,11 @@ def get_import(command_actions, prov_dir, uuid):
 
     plugins = command_actions['environment']['plugins']
     plugins = {plugin: plugins[plugin]['version'] for plugin in plugins}
+    if not plugins:
+        fw = command_actions['environment']['framework']
+        if isinstance(fw, dict):
+            fw = fw['version']
+        plugins = {'framework': fw}
 
     return InputCommand(
         input_path=get_import_input_path(command_actions),
@@ -263,15 +268,15 @@ def parse_provenance(final_command, output_dir):
 
 def relabel_command_inputs_and_outputs(final_filename, final_uuid, commands,
                                        q2cli=True):
-    results, result_list = dict(), dict()
+    results, result_list, metadata_list = dict(), dict(), dict()
 
-    ctr = collections.Counter()
+    output_ctr, metadata_ctr = collections.Counter(), 1
 
     for cmd in commands:
         if isinstance(cmd, ActionCommand):
             resname = '%s-%s' % (cmd.plugin, cmd.action)
-            ctr.update([resname])
-            result_loc = '%s_%d' % (resname, ctr[resname])
+            output_ctr.update([resname])
+            result_loc = '%s_%d' % (resname, output_ctr[resname])
             if not q2cli:
                 result_loc = dekebab(result_loc)
             result_list[cmd.execution_uuid] = result_loc
@@ -287,6 +292,11 @@ def relabel_command_inputs_and_outputs(final_filename, final_uuid, commands,
                         res = '%s.%s' % (result_list[cmd.execution_uuid],
                                          output.name)
                     results[output.uuid] = res
+
+            for md in cmd.metadata:
+                metadata_list[md.file] = 'metadata%d.txt' % metadata_ctr
+                metadata_ctr = metadata_ctr + 1
+
         else:  # import
             if q2cli:
                 res = cmd.input_path + '.qza'
@@ -303,13 +313,18 @@ def relabel_command_inputs_and_outputs(final_filename, final_uuid, commands,
             for input_ in cmd.inputs:
                 relabeled_inputs.append(input_._replace(
                     uuid=results[input_.uuid]))
+            relabeled_metadata = []
+            for metadata in cmd.metadata:
+                relabeled_metadata.append(metadata._replace(
+                    file=metadata_list[metadata.file]))
             relabeled_outputs = []
             for output in cmd.outputs:
                 relabeled_outputs.append(input_._replace(
                     uuid=results[output.uuid]))
             relabeled_cmds.append(cmd._replace(
                 inputs=relabeled_inputs, outputs=relabeled_outputs,
-                result=result_list[cmd.execution_uuid]))
+                result=result_list[cmd.execution_uuid],
+                metadata=relabeled_metadata))
         else:  # import
             relabeled_cmds.append(cmd._replace(
                 output_path=results[cmd.output_path]))
@@ -350,7 +365,7 @@ def render_commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
                    ['--output-path', command.output_path]]
 
         cmd = [' '.join(line) for line in cmd]
-        comment_line = ['# plugin versions: %s' % command.plugins]
+        comment_line = ['# versions: %s' % command.plugins]
         first = comment_line + ['%s \\' % cmd[0]]
         last = ['  %s\n' % cmd[-1]]
         cmd = first + ['  %s \\' % line for line in cmd[1:-1]] + last
@@ -382,7 +397,7 @@ def render_commands_to_artifact_api(final_filename, final_uuid, commands,
                 cmd.append(['%s=%s,' % (name, value)])
             for md in command.metadata:
                 name, value, md_type = md
-                var_name = deperiod(value)
+                var_name = dekebab(deperiod(value))
                 metadata.append({var_name: md})
                 cmd.append(['%s=%s,' % (name, var_name)])
             for name, value in command.parameters:
@@ -398,7 +413,7 @@ def render_commands_to_artifact_api(final_filename, final_uuid, commands,
             cmd.append(['# IMPORT VIEW TYPE'])
 
         cmd = [' '.join(line) for line in cmd]
-        comment_line = ['# plugin versions: %s' % command.plugins]
+        comment_line = ['# versions: %s' % command.plugins]
         first = comment_line + ['%s' % cmd[0]]
         last = ['  %s\n)\n' % cmd[-1]]
         fmt_cmds.append(first + ['  %s' % line for line in cmd[1:-1]] + last)
