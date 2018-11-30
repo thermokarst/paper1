@@ -102,8 +102,8 @@ def param_is_metadata(value):
 
 def load_and_interrogate_metadata(pathlib_md):
     # Generally speaking, learning about metadata from provenance is
-    # cumbersome --- there is currently know way to fully know if metadata
-    # represents `Metadata`, or `MetadataColumn`.
+    # cumbersome --- there is currently no way to fully know (in many cases)
+    # if metadata represents `Metadata`, or `MetadataColumn`.
     try:
         qmd = qiime2.Metadata.load(str(pathlib_md))
     except MetadataFileError as e:
@@ -330,12 +330,12 @@ def render_commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
             for name, value, md_type in kcmd.metadata:
                 cmd.append(['--m-%s-file' % name, '%s' % value])
                 if md_type == 'column':
-                    cmd.append(['--m-%s-column' % name, 'REPLACE_ME'])
+                    cmd.append(['--m-%s-column' % name, "'REPLACE_ME'"])
             for name, value in kcmd.parameters:
                 if isinstance(value, bool):
                     cmd.append(['--p-%s%s' % ('' if value else 'no-', name)])
                 elif value is not None:
-                    cmd.append(['--p-%s' % name, '%s' % value])
+                    cmd.append(['--p-%s' % name, '%r' % value])
             cmd.append(['--output-dir', kcmd.result])
         else:
             cmd = [['qiime', 'tools', 'import'],
@@ -387,6 +387,9 @@ def render_commands_to_artifact_api(final_filename, final_uuid, commands,
             cmd = [['%s = qiime2.Artifact.import_data(' % command.output_path],
                    ['%r, %r, view_type=%s' % (command.type, command.input_path,
                                               command.input_format)]]
+            # There should be some unified framework-level API for importing
+            # formats and semantic types. As well, the `view_type` param above
+            # should also accept a string.
             cmd.append(['# IMPORT VIEW TYPE'])
 
         cmd = [' '.join(line) for line in cmd]
@@ -395,6 +398,7 @@ def render_commands_to_artifact_api(final_filename, final_uuid, commands,
         last = ['  %s\n)\n' % cmd[-1]]
         fmt_cmds.append(first + ['  %s' % line for line in cmd[1:-1]] + last)
 
+    outfile.write('import qiime2\n')
     for plugin in plugins:
         outfile.write('from qiime2.plugins import %s\n' % plugin)
 
