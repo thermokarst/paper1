@@ -91,7 +91,7 @@ def get_output_name(command, uuid, prov_dir):
         # V1 archive format doesn't know it's output name
         alt_uuid = (prov_dir / 'artifacts' / str(uuid) / 'metadata.yaml')
         mdy = load_yaml(alt_uuid)
-        return OutputRecord(name='TOO_OLD', uuid=mdy['uuid'])
+        return OutputRecord(name=mdy['uuid'].split('-')[-1], uuid=mdy['uuid'])
 
 
 def command_is_import(command):
@@ -337,7 +337,8 @@ def render_commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
                                                         commands)
 
     outfile = (script_dir / 'q2cli.sh').open('w')
-    outfile.write('#!/bin/sh\n\n')
+    # Removing for manus
+    # outfile.write('#!/bin/sh\n\n')
 
     for command in relabeled_cmds:
         if isinstance(command, ActionCommand):
@@ -350,11 +351,12 @@ def render_commands_to_q2cli(final_filename, final_uuid, commands, script_dir):
             for name, value, md_type in kcmd.metadata:
                 cmd.append(['--m-%s-file' % name, '%s' % value])
                 if md_type == 'column':
-                    cmd.append(['--m-%s-column' % name, "'REPLACE_ME'"])
+                    cmd.append(['--m-%s-column' % name, "'ColumnName'"])
             for name, value in kcmd.parameters:
                 if isinstance(value, bool):
                     cmd.append(['--p-%s%s' % ('' if value else 'no-', name)])
                 elif value is not None:
+                    # TODO: raw strings are escaped here
                     cmd.append(['--p-%s' % name, '%r' % value])
             cmd.append(['--output-dir', kcmd.result])
         else:
@@ -381,7 +383,8 @@ def render_commands_to_artifact_api(final_filename, final_uuid, commands,
                                                         commands, q2cli=False)
 
     outfile = (output_dir / 'artifact_api.py').open('w')
-    outfile.write('#!/usr/bin/env python\n\n')
+    # Removing for manus
+    # outfile.write('#!/usr/bin/env python\n\n')
 
     fmt_cmds, plugins, metadata = [], set(), []
     for command in relabeled_cmds:
@@ -399,18 +402,18 @@ def render_commands_to_artifact_api(final_filename, final_uuid, commands,
                 name, value, md_type = md
                 var_name = dekebab(deperiod(value))
                 metadata.append({var_name: md})
+                # TODO: missing column name in variable when appropriate
                 cmd.append(['%s=%s,' % (name, var_name)])
             for name, value in command.parameters:
+                # TODO: raw strings are escaped here
                 cmd.append(['%s=%r,' % (name, value)])
 
         else:
-            cmd = [['%s = qiime2.Artifact.import_data(' % command.output_path],
-                   ['%r, %r, view_type=%s' % (command.type, command.input_path,
-                                              command.input_format)]]
             # There should be some unified framework-level API for importing
-            # formats and semantic types. As well, the `view_type` param above
-            # should also accept a string.
-            cmd.append(['# IMPORT VIEW TYPE'])
+            # formats and semantic types.
+            cmd = [['%s = qiime2.Artifact.import_data(' % command.output_path],
+                   ['%r, %r, view_type=%r' % (command.type, command.input_path,
+                                              command.input_format)]]
 
         cmd = [' '.join(line) for line in cmd]
         comment_line = ['# versions: %s' % command.plugins]
@@ -422,18 +425,18 @@ def render_commands_to_artifact_api(final_filename, final_uuid, commands,
     for plugin in plugins:
         outfile.write('from qiime2.plugins import %s\n' % plugin)
 
-    outfile.write('\n\n')
+    outfile.write('\n')
 
     for md in metadata:
         (var_name, mdr), = md.items()
         if mdr.type == 'full':
             cmd = '%s = qiime2.Metadata.load(%r)\n' % (var_name, mdr.file)
         else:
-            vals = (var_name, 'REPLACE_ME', mdr.file, 'REPLACE_ME')
+            vals = (var_name, 'ColumnName', mdr.file, 'ColumnName')
             cmd = '%s_%s = qiime2.Metadata.load(%r).get_column(%r)\n' % vals
         outfile.write(cmd)
 
-    outfile.write('\n\n')
+    outfile.write('\n')
 
     for cmd in fmt_cmds:
         outfile.write('%s' % '\n'.join(cmd))
